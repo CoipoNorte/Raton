@@ -316,6 +316,115 @@ export function drawTrap(
   ctx.restore();
 }
 
+/* ---------------- FRESA (power-up ×20s de queso) ---------------- */
+export function drawStrawberry(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  s: number
+) {
+  const bob = Math.sin(t * 0.004) * 2;
+  ctx.save();
+  ctx.translate(0, bob);
+  ctx.rotate(Math.sin(t * 0.0023) * 0.06);
+  ctx.scale(s, s);
+
+  // halo de fresa
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 30);
+  g.addColorStop(0, "rgba(228,87,46,0.45)");
+  g.addColorStop(1, "rgba(228,87,46,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, 30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // cuerpo de la fresa
+  ctx.beginPath();
+  ctx.moveTo(0, -13);
+  ctx.bezierCurveTo(12, -10, 15, 4, 9, 13);
+  ctx.bezierCurveTo(4, 18, -4, 18, -9, 13);
+  ctx.bezierCurveTo(-15, 4, -12, -10, 0, -13);
+  ctx.closePath();
+  ctx.fillStyle = "#e63a3a";
+  ctx.strokeStyle = "#a8241f";
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+
+  // brillo
+  ctx.fillStyle = "rgba(255,255,255,0.45)";
+  ctx.beginPath();
+  ctx.ellipse(-4, -2, 3, 5, -0.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // hojitas verdes
+  ctx.fillStyle = "#3fae6b";
+  ctx.strokeStyle = "#2e8b53";
+  ctx.lineWidth = 1.4;
+  for (const a of [-0.5, 0, 0.5]) {
+    ctx.save();
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(-5, -20);
+    ctx.lineTo(0, -16);
+    ctx.lineTo(5, -20);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* ---------------- BAND-AID (vida extra) ---------------- */
+export function drawBandaid(
+  ctx: CanvasRenderingContext2D,
+  t: number,
+  s: number
+) {
+  const bob = Math.sin(t * 0.004) * 2;
+  ctx.save();
+  ctx.translate(0, bob);
+  ctx.rotate(-0.5 + Math.sin(t * 0.002) * 0.05);
+  ctx.scale(s, s);
+
+  const g = ctx.createRadialGradient(0, 0, 4, 0, 0, 30);
+  g.addColorStop(0, "rgba(155,209,176,0.5)");
+  g.addColorStop(1, "rgba(155,209,176,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(0, 0, 30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // parche en diagonal
+  ctx.save();
+  ctx.translate(0, 0);
+  roundRect(ctx, -9, -17, 18, 34, 7);
+  ctx.fillStyle = "#fbf3df";
+  ctx.strokeStyle = "#caa86f";
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+  // vendas laterales
+  ctx.fillStyle = "#e8d8b4";
+  ctx.beginPath();
+  ctx.arc(0, -17, 9, 0, Math.PI * 2);
+  ctx.arc(0, 17, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  // cruce de hilo
+  ctx.strokeStyle = "#caa86f";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(-4, -3);
+  ctx.lineTo(4, 3);
+  ctx.moveTo(4, -3);
+  ctx.lineTo(-4, 3);
+  ctx.stroke();
+  ctx.restore();
+  ctx.restore();
+}
+
 /* ---------------- RATÓN (vista trasera corriendo) ---------------- */
 export interface MousePose {
   t: number; // tiempo global ms

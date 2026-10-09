@@ -34,7 +34,16 @@ export default function App() {
   useEffect(() => {
     sound.setVolume(settings.volume);
     sound.setMuted(settings.muted);
-  }, [sound, settings.volume, settings.muted]);
+    sound.setMusicVolume(settings.musicVol);
+    sound.setMusicEnabled(settings.music);
+  }, [sound, settings.volume, settings.muted, settings.music, settings.musicVol]);
+
+  // al volver al menú, la música sigue sonando tranquila
+  useEffect(() => {
+    if (screen === "menu") sound.resumeMusic();
+  }, [screen, sound]);
+
+  useEffect(() => () => sound.stopMusic(), [sound]);
 
   const saveRef = useRef<SaveData | null>(null);
 

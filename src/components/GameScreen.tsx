@@ -28,6 +28,7 @@ const HINTS: Record<GameSettings["control"], string> = {
   swipe: "Desliza o toca izq/der",
   zones: "Toca la mitad izq o der",
   buttons: "Toca < o > para moverte",
+  tilt: "Inclina el celular a los lados",
 };
 
 export default function GameScreen({
@@ -43,7 +44,9 @@ export default function GameScreen({
   const cheeseRef = useRef<HTMLSpanElement>(null);
   const auraRef = useRef<HTMLSpanElement>(null);
   const multRef = useRef<HTMLSpanElement>(null);
-  const lastHud = useRef({ d: -1, c: -1, a: -1 });
+  const livesRef = useRef<HTMLDivElement>(null);
+  const [berry, setBerry] = useState(false);
+  const lastHud = useRef({ d: -1, c: -1, a: -1, l: -1, b: false });
   const [paused, setPaused] = useState(false);
   const [showHint, setShowHint] = useState(true);
   const [engineError, setEngineError] = useState(false);
@@ -87,8 +90,21 @@ export default function GameScreen({
             multRef.current.textContent = `×${h.auraMult.toFixed(2)}`;
             L.a = h.aura;
           }
+          if (h.lives !== L.l && livesRef.current) {
+            // formato pedido: [emoji][número]x → 🩹3x
+            livesRef.current.textContent = `🩹${h.lives}x`;
+            L.l = h.lives;
+          }
+          if (h.strawberry !== L.b) {
+            L.b = h.strawberry;
+            setBerry(h.strawberry);
+          }
+          // la música sigue la velocidad del juego (tempo + percusión)
+          sound.setMusicIntensity(h.speed01);
         },
       });
+      game.vibrateEnabled = settings.vibrate;
+      if (settings.control === "tilt") void game.requestTilt();
     } catch {
       setEngineError(true);
       return;
@@ -120,10 +136,20 @@ export default function GameScreen({
 
     const down = (e: PointerEvent) => {
       sound.unlock();
-      // ignorar toques en botones de UI (pausa, mute, opciones…)
       const target = e.target as HTMLElement | null;
+      // botones < > visibles: dirección explícita (siempre funcionan)
+      const laneBtn = target?.closest?.("[data-lane-btn]") as HTMLElement | null;
+      if (laneBtn) {
+        const dir = (laneBtn.getAttribute("data-lane-dir") === "r" ? 1 : -1) as
+          | 1
+          | -1;
+        game.move(dir);
+        setShowHint(false);
+        return;
+      }
+      // ignorar toques en el resto de botones de UI (pausa, mute, opciones…)
       const btn = target?.closest?.("button");
-      if (btn && !btn.hasAttribute("data-lane-btn")) return;
+      if (btn) return;
 
       if (modeRef.current === "swipe") {
         if (tracking) return; // un solo dedo manda
@@ -182,11 +208,21 @@ export default function GameScreen({
       parent.removeEventListener("pointerup", up);
       parent.removeEventListener("pointercancel", up);
       parent.removeEventListener("contextmenu", ctxMenu);
+      game.stopTilt();
       game.destroy();
       gameRef.current = null;
+      // al salir de la pista la música vuelve a su calma de menú
+      sound.setMusicIntensity(0);
+      sound.resumeMusic();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // pausar la partida también serena la música (no se queda sonando en sordina)
+  useEffect(() => {
+    if (paused) sound.pauseMusic();
+    else sound.resumeMusic();
+  }, [paused, sound]);
 
   const togglePause = () => gameRef.current?.setPaused(!paused);
 
@@ -245,50 +281,73 @@ export default function GameScreen({
         </div>
       </div>
 
-      {/* botones pause / mute */}
-      <div className="absolute bottom-[max(0.75rem,env(safe-area-inset-bottom))] right-[max(0.75rem,env(safe-area-inset-bottom))] z-20 flex gap-2">
-        <HudButton
-          onClick={() => onSettings({ muted: !settings.muted })}
-          label={settings.muted ? "Activar sonido" : "Silenciar"}
-        >
-          {settings.muted ? (
-            <VolumeX className="h-4 w-4" />
-          ) : (
-            <Volume2 className="h-4 w-4" />
+      {/* barra inferior central: [mute] [🩹3x vidas] [pausa] + aviso de fresa */}
+      <div className="absolute bottom-[max(0.625rem,env(safe-area-inset-bottom))] left-1/2 z-20 flex -translate-x-1/2 flex-col items-center gap-1.5">
+        <AnimatePresence>
+          {berry && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="rounded-full bg-[#e4572e] px-3 py-0.5 text-[11px] font-black text-[#fff4e3] shadow-[0_2px_0_#a63a1a]"
+            >
+              🍓 queso ×20
+            </motion.div>
           )}
-        </HudButton>
-        <HudButton onClick={togglePause} label="Pausa">
-          <Pause className="h-4 w-4" />
-        </HudButton>
+        </AnimatePresence>
+        <div className="flex items-center gap-2">
+          <HudButton
+            onClick={() => onSettings({ muted: !settings.muted })}
+            label={settings.muted ? "Activar sonido" : "Silenciar"}
+          >
+            {settings.muted ? (
+              <VolumeX className="h-4 w-4" />
+            ) : (
+              <Volume2 className="h-4 w-4" />
+            )}
+          </HudButton>
+          <div
+            ref={livesRef}
+            aria-label="Vidas"
+            className="tabular flex h-10 min-w-[4.25rem] items-center justify-center rounded-full border-2 border-[#2e2a26]/10 bg-[#fffdf4]/90 px-3 text-base font-black text-[#2e2a26] shadow-[0_2px_0_rgba(46,42,38,0.15)] backdrop-blur-sm"
+          >
+            🩹3x
+          </div>
+          <HudButton onClick={togglePause} label="Pausa">
+            <Pause className="h-4 w-4" />
+          </HudButton>
+        </div>
       </div>
 
-      {/* ------- botones < > visibles (modo Botones) ------- */}
+      {/* ------- botones < > funcionales en zona de pulgares (modo Botones) ------- */}
       <AnimatePresence>
         {settings.control === "buttons" && !paused && !engineError && (
           <>
             <motion.button
               key="l"
               data-lane-btn
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
+              data-lane-dir="l"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
               whileTap={{ scale: 0.85 }}
               aria-label="Carril izquierda"
-              className="absolute left-3 top-1/2 z-10 flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#2e2a26]/20 bg-[#fffdf4]/55 text-[#2e2a26]/75 shadow-[0_3px_0_rgba(46,42,38,0.15)] backdrop-blur-[2px]"
+              className="absolute bottom-[max(0.9rem,env(safe-area-inset-bottom))] left-3 z-10 flex h-20 w-20 items-center justify-center rounded-full border-2 border-[#2e2a26]/20 bg-[#fffdf4]/60 text-[#2e2a26]/80 shadow-[0_4px_0_rgba(46,42,38,0.18)] backdrop-blur-[2px]"
             >
-              <ChevronLeft className="h-9 w-9" strokeWidth={3} />
+              <ChevronLeft className="h-10 w-10" strokeWidth={3} />
             </motion.button>
             <motion.button
               key="r"
               data-lane-btn
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
+              data-lane-dir="r"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
               whileTap={{ scale: 0.85 }}
               aria-label="Carril derecha"
-              className="absolute right-3 top-1/2 z-10 flex h-16 w-16 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#2e2a26]/20 bg-[#fffdf4]/55 text-[#2e2a26]/75 shadow-[0_3px_0_rgba(46,42,38,0.15)] backdrop-blur-[2px]"
+              className="absolute bottom-[max(0.9rem,env(safe-area-inset-bottom))] right-3 z-10 flex h-20 w-20 items-center justify-center rounded-full border-2 border-[#2e2a26]/20 bg-[#fffdf4]/60 text-[#2e2a26]/80 shadow-[0_4px_0_rgba(46,42,38,0.18)] backdrop-blur-[2px]"
             >
-              <ChevronRight className="h-9 w-9" strokeWidth={3} />
+              <ChevronRight className="h-10 w-10" strokeWidth={3} />
             </motion.button>
           </>
         )}
@@ -301,7 +360,7 @@ export default function GameScreen({
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="pointer-events-none absolute inset-x-0 bottom-[max(5.5rem,calc(env(safe-area-inset-bottom)+4.5rem))] z-20 flex justify-center"
+            className="pointer-events-none absolute inset-x-0 bottom-[max(7rem,calc(env(safe-area-inset-bottom)+6.5rem))] z-20 flex justify-center"
           >
             <div className="flex items-center gap-2 rounded-full bg-[#2e2a26]/85 px-4 py-2 text-[#faf4e4]">
               <MoveHorizontal className="h-5 w-5 animate-pulse" />
@@ -318,7 +377,7 @@ export default function GameScreen({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 overflow-y-auto bg-[#211d19]/72 px-4 py-5 backdrop-blur-[3px]"
+            className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-3 bg-[#211d19]/72 px-4 py-5 backdrop-blur-[3px]"
           >
             <div className="font-brush text-4xl text-[#faf4e4] sm:text-5xl">
               一時停止

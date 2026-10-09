@@ -22,13 +22,27 @@ de sakura.
 
 ### Opciones (menú ⚙ o en pausa)
 
-- **Sonido**: volumen maestro (0–100) y silencio.
+- **Efectos**: volumen maestro (0–100) y silencio total.
+- **Música de fondo**: interruptor + volumen propio. Es un secuenciador *live*
+  sobre escala **Miyako-bushi** (koto, bajo, drone y taiko) que **sube de tempo y
+  densidad con la velocidad del juego**; se pausa con la partida.
 - **Controles táctiles**, elegidos a tu gusto:
   - **Deslizar** — táctil puro: arrastra el dedo (también vale un toque rápido a un lado).
   - **Zonas** — toques invisibles `< >`: toca la mitad izquierda o derecha.
   - **Botones** — lo mismo que Zonas, pero con botones `< >` visibles en pantalla.
+  - **Giroscopio** — inclina el celular a los lados para moverte (pide permiso de
+    orientación en iOS la primera vez).
+- **Vibrar**: activa/desactiva la vibración háptica.
 
 Todo se guarda automáticamente en el dispositivo.
+
+### Vidas y power-ups
+
+- **Band-Aid (🩹)**: son tus vidas. Empiezas con **3** (máx **9**). Tocar una
+  trampa quita una; con 0 vidas se acaba la partida. Son **muy raras** de ver.
+- **Fresa (🍓)**: muy rara y **no acumulable**; activa un **×20** a la distancia
+  por queso durante **10 segundos** (indicador 🍓 ×20s en pantalla).
+  Volver a cogerla reinicia los 10 s, nunca los suma.
 
 Tu **mejor distancia se guarda automáticamente** en el dispositivo con
 **IndexedDB** (con espejo en localStorage), junto con partidas jugadas, quesos
@@ -151,10 +165,28 @@ Todas las constantes de diseño están al principio de
 
 | Constante | Significado | Valor |
 | --- | --- | --- |
-| `START_SPEED` | Velocidad inicial (px/s) | `300` |
-| `MAX_SPEED` | Velocidad máxima | `790` |
-| `RAMP_T` | Segundos hasta la velocidad máxima | `80` |
+| `START_SPEED` | Velocidad inicial (px/s) | `260` |
+| `MAX_SPEED` | Velocidad máxima | `680` |
+| `RAMP_T` | Segundos hasta la velocidad máxima (rampa gradual) | `110` |
 | `PX_PER_M` | Cuántos píxeles equivalen a 1 metro | `52` |
+
+Cada nivel de trampas se valida con `fixTrapLevel()`: **siempre existe un
+camino alcanzable** (máx. 1 carril por hueco) entre patrones consecutivos.
+`enforcePassable()` es el seguro final contra muros de 3 trampas.
+
+### Topes de recursos (rendimiento estable en móviles modestos)
+
+| Constante | Límite | Qué pasa al superarlo |
+| --- | --- | --- |
+| `MAX_ENTITIES` | `3` en pantalla | entra una nueva y sale la más antigua que **ya pasó** al ratón (sin pops a la vista) |
+| `MAX_PARTICLES` | `30` | cola FIFO: se descarta la partícula más vieja |
+| `PETAL_RESERVE` | `10` | siempre quedan partidas para los efectos de comer/chocar |
+| `MAX_FLOATS` | `4` | los textos flotantes viejos se retiran antes de terminar |
+| `MAX_DECOR` | `10` | matas, piedras y torii de los márgenes se reciclan |
+
+El hueco entre filas se mide en **tiempo de reacción** (0.75 s → 1.25 s), así que
+en píxeles crece con la velocidad: más rápido = más distancia vertical, jamás
+elementos solapados ni agrupaciones injugables.
 
 En `spawnRow()` puedes ajustar el peso de cada patrón (trampas dobles, cebos,
 filas de queso, zig-zag…) y en `auraMult()` el poder del aura.

@@ -16,6 +16,8 @@ import {
   drawTorii,
   drawTrap,
   drawTuft,
+  drawStrawberry,
+  drawBandaid,
 } from "./draw";
 import type { SoundEngine } from "./audio";
 import { buzz } from "./audio";
@@ -26,6 +28,8 @@ export interface HudState {
   aura: number;
   auraMult: number;
   speed01: number;
+  lives: number;
+  strawberry: boolean;
 }
 
 export interface RunResult {
@@ -42,7 +46,7 @@ interface EngineCallbacks {
   onFatal?: () => void;
 }
 
-type EntType = "trap" | "cheese";
+type EntType = "trap" | "cheese" | "strawberry" | "bandaid";
 interface Ent {
   type: EntType;
   lane: number;
@@ -96,12 +100,21 @@ interface Cloud {
   v: number;
 }
 
-const START_SPEED = 300;
-const MAX_SPEED = 840;
-const RAMP_T = 80; // segundos hasta velocidad máxima
+const START_SPEED = 260;
+const MAX_SPEED = 680;
+const RAMP_T = 110; // segundos hasta velocidad máxima (rampa larga y gradual)
 const PX_PER_M = 52;
 const LANES = 3;
-const TRAP_CHEESE_GAP = 128;
+
+/* --- topes de recursos: nunca saturar el dispositivo ---
+ * Pocos elementos en pantalla = dibujo barato y CPU libre para el input.
+ * Al pasarse, se descarta lo más antiguo (FIFO), así el límite es real. */
+const MAX_ENTITIES = 3; // trampas + quesos + power-ups simultáneos
+const MAX_PARTICLES = 30; // partículas activas en total
+const PETAL_RESERVE = 10; // partidas reservadas para efectos (que siempre se vean)
+const MAX_FLOATS = 4; // textos flotantes
+const MAX_DECOR = 10; // matas/piedras/torii de los márgenes
+
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
@@ -124,6 +137,17 @@ export class RatonGame {
   state: "playing" | "dying" | "dead" = "playing";
   paused = false;
 
+  // --- sistema de vidas (Band-Aid) ---
+  lives = 3;
+  maxLives = 9;
+  // --- fresa: multiplicador de queso por tiempo ---
+  strawberryUntil = 0;
+  nextPowerupAt = 900;
+  // --- giroscopio ---
+  tiltActive = false;
+  private tiltHandler?: (e: DeviceOrientationEvent) => void;
+  vibrateEnabled = true;
+
   private elapsed = 0;
   private scroll = 0;
   private speed = START_SPEED;
@@ -139,6 +163,10 @@ export class RatonGame {
   private timeScale = 1;
   private deathT = 0;
   private graceT = 0.9;
+  /** Invulnerabilidad tras perder una vida (segundos) */
+  private invulnT = 0;
+  /** Carriles con ruta garantizada tras el último patrón */
+  private pathLanes: number[] = [0, 1, 2];
 
   private player = { lane: 1, x: 0, lean: 0 };
   private ents: Ent[] = [];
@@ -181,6 +209,7 @@ export class RatonGame {
     // El primer segundo siempre muestra juego real, no una pista vacía.
     this.spawnEnt("cheese", 1, this.H * 0.22);
     this.spawnEnt("trap", 0, this.H * 0.04);
+    this.pathLanes = [1, 2];
 
     // nubes iniciales (solo en la banda del cielo)
     for (let i = 0; i < 5; i++) {
@@ -250,10 +279,62 @@ export class RatonGame {
     return 1 + Math.min(this.aura, 12) * 0.08;
   }
 
+  /** Fracción de velocidad 0..1 (para escalar espaciado de trampas) */
+  speedFrac() {
+    return clamp(
+      (this.speed - START_SPEED) / (MAX_SPEED - START_SPEED),
+      0,
+      1
+    );
+  }
+
   setPaused(p: boolean) {
     if (this.paused === p) return;
     this.paused = p;
     this.cb.onPauseChange?.(p);
+  }
+
+  /** Activa el giroscopio (modo tilt). Devuelve false si el navegador no deja. */
+  async requestTilt(): Promise<boolean> {
+    const DOE = (
+      window as unknown as {
+        DeviceOrientationEvent?: {
+          requestPermission?: () => Promise<"granted" | "denied">;
+        };
+      }
+    ).DeviceOrientationEvent;
+    try {
+      if (DOE && typeof DOE.requestPermission === "function") {
+        const res = await DOE.requestPermission();
+        if (res !== "granted") return false;
+      }
+    } catch {
+      /* noop */
+    }
+    if (typeof window.addEventListener !== "function") return false;
+    this.tiltActive = true;
+    const handler = (e: DeviceOrientationEvent) => {
+      if (this.state !== "playing" || this.paused) return;
+      const g = typeof e.gamma === "number" ? e.gamma : 0; // -90..90 (izq/der)
+      if (g < -10) this.move(-1, true);
+      else if (g > 10) this.move(1, true);
+    };
+    this.tiltHandler = handler;
+    window.addEventListener("deviceorientation", handler);
+    return true;
+  }
+
+  stopTilt() {
+    this.tiltActive = false;
+    if (this.tiltHandler) {
+      window.removeEventListener("deviceorientation", this.tiltHandler);
+      this.tiltHandler = undefined;
+    }
+  }
+
+  /** Vibración respetando el ajuste del jugador */
+  private vib(pattern: number | number[]) {
+    buzz(pattern, this.vibrateEnabled);
   }
 
   start() {
@@ -301,7 +382,7 @@ export class RatonGame {
 
   /* ---------------- input ---------------- */
 
-  move(dir: -1 | 1) {
+  move(dir: -1 | 1, silent = false) {
     if (this.state !== "playing" || this.paused) return;
     const next = clamp(this.player.lane + dir, 0, LANES - 1);
     if (next === this.player.lane) {
@@ -311,8 +392,10 @@ export class RatonGame {
       return;
     }
     this.player.lane = next;
-    this.sound.swipe();
-    buzz(8);
+    if (!silent) {
+      this.sound.swipe();
+      this.vib(8);
+    }
     // polvo al cambiar de carril
     for (let i = 0; i < 6; i++) {
       this.parts.push({
@@ -334,24 +417,36 @@ export class RatonGame {
 
   /* ---------------- spawning ---------------- */
 
+  /**
+   * Las entidades se colocan EXACTAMENTE donde el patrón indica. La separación
+   * entre filas la garantiza el cursor de filas (altura del patrón + hueco),
+   * así que nunca hace falta "empujar" nada hacia arriba (eso era lo que
+   * acababa alineando trampas de filas distintas en un muro).
+   */
   private spawnEnt(type: EntType, lane: number, yOff: number) {
-    // Nunca permitimos que queso y trampa queden visualmente superpuestos.
-    // Si un patrón nuevo alcanza uno anterior, aparece más arriba.
-    let safeY = yOff;
-    for (let pass = 0; pass < 8; pass++) {
-      const conflict = this.ents.find(
-        (e) =>
-          e.type !== type &&
-          !e.taken &&
-          Math.abs(e.y - safeY) < TRAP_CHEESE_GAP
-      );
-      if (!conflict) break;
-      safeY = conflict.y - TRAP_CHEESE_GAP;
+    // Tope estricto de entidades simultáneas (3). Si ya está lleno,
+    // retiramos la más antigua que YA pasó al ratón: desaparece fuera de la
+    // zona crítica, así nunca hay un "pop" a mitad del camino. Si todas están
+    // por delante, simplemente no se genera la nueva (nace fuera de pantalla).
+    if (this.ents.length >= MAX_ENTITIES) {
+      const limit = this.playerY() + 30;
+      let idx = -1;
+      let bestY = -Infinity;
+      for (let i = 0; i < this.ents.length; i++) {
+        const e = this.ents[i];
+        if (e.taken) continue;
+        if (e.y > limit && e.y > bestY) {
+          bestY = e.y;
+          idx = i;
+        }
+      }
+      if (idx < 0) return;
+      this.ents.splice(idx, 1);
     }
     this.ents.push({
       type,
       lane,
-      y: safeY,
+      y: yOff,
       xOff: 0,
       seed: Math.random() * 1000,
       counted: false,
@@ -361,49 +456,142 @@ export class RatonGame {
     });
   }
 
-  /** Genera una fila de patrón (selección ponderada). Devuelve multiplicador de hueco. */
-  private spawnRow(): number {
+  /**
+   * SEGURO FINAL contra muros: si dentro de una ventana vertical (lo que tarda
+   * el ratón en cambiar de carril) hay trampas en LOS 3 carriles, se elimina
+   * la trampa más reciente (la más alta). Se ejecuta tras cada fila nueva.
+   */
+  private enforcePassable() {
+    const win = Math.max(170, this.speed * 0.6);
+    const traps = this.ents
+      .filter((e) => e.type === "trap" && !e.taken)
+      .sort((a, b) => a.y - b.y); // las más altas (nuevas) primero
+    for (const t of traps) {
+      if (t.taken) continue;
+      const lanes = new Set<number>();
+      for (const o of traps) {
+        if (!o.taken && Math.abs(o.y - t.y) < win) lanes.add(o.lane);
+      }
+      if (lanes.size >= LANES) t.taken = true;
+    }
+    // también: nunca dos trampas en el mismo carril demasiado pegadas
+    for (let i = 0; i < traps.length; i++) {
+      const a = traps[i];
+      if (a.taken) continue;
+      for (let j = i + 1; j < traps.length; j++) {
+        const b = traps[j];
+        if (!b.taken && b.lane === a.lane && Math.abs(a.y - b.y) < 110) {
+          a.taken = true;
+          break;
+        }
+      }
+    }
+    this.ents = this.ents.filter((e) => !e.taken);
+  }
+
+  /** Amplía la ruta: con un hueco de fila puedes derivar 1 carril a cada lado */
+  private widenLanes(lanes: number[]): number[] {
+    const s = new Set<number>();
+    for (const l of lanes)
+      for (const d of [-1, 0, 1]) {
+        const x = l + d;
+        if (x >= 0 && x < LANES) s.add(x);
+      }
+    return [...s];
+  }
+
+  /**
+   * GARANTÍA DE CAMINO: valida que el nivel de trampas deje un carril seguro
+   * ALCANZABLE desde la ruta actual (máx. 1 carril por hueco). Si no lo deja,
+   * reubica trampas; en último caso elimina una. Siempre existe un camino.
+   */
+  private fixTrapLevel(trapLanes: number[]): number[] {
+    let traps = [...trapLanes];
+    const safeOf = () => [0, 1, 2].filter((l) => !traps.includes(l));
+    const reachable = () =>
+      this.widenLanes(this.pathLanes).filter((l) => safeOf().includes(l));
+    let attempts = 0;
+    while (reachable().length === 0 && attempts < 10) {
+      attempts++;
+      const i = Math.floor(rand(0, traps.length));
+      const alt = [0, 1, 2].filter((l) => l !== traps[i] && !traps.includes(l));
+      if (alt.length === 0) break;
+      traps[i] = alt[Math.floor(rand(0, alt.length))];
+    }
+    if (reachable().length === 0 && traps.length > 1) traps.pop();
+    this.pathLanes = reachable();
+    return traps;
+  }
+
+  /**
+   * Genera una fila de patrón (selección ponderada).
+   * Devuelve { h, mul }: h = altura del patrón por encima de la línea base
+   * (px), mul = multiplicador del hueco posterior. El cursor de filas coloca
+   * la siguiente fila SIEMPRE por encima de h + hueco → nunca hay solapes.
+   */
+  private spawnRow(): { h: number; mul: number } {
     const t01 = clamp(this.elapsed / RAMP_T, 0, 1);
-    const patterns: { w: number; run: () => number }[] = [
+
+    // --- fila de power-up (muy rara): fresa o band-aid en un carril alcanzable ---
+    if (this.scroll >= this.nextPowerupAt) {
+      const options = this.widenLanes(this.pathLanes);
+      const lane = options[Math.floor(rand(0, options.length))] ?? 1;
+      // Fresa ahora es súper exclusiva (25% del ya de por sí raro powerup, 75% bandaid si le faltan vidas, o bandaid por defecto)
+      const wantBandaid = this.lives < this.maxLives ? Math.random() < 0.75 : true;
+      this.spawnEnt(wantBandaid ? "bandaid" : "strawberry", lane, -70);
+      this.pathLanes = options;
+      // Intervalo mucho más largo para reducir drásticamente su aparición
+      this.nextPowerupAt = this.scroll + rand(4500, 8000);
+      return { h: 0, mul: 0.95 };
+    }
+
+    const patterns: { w: number; run: () => { h: number; mul: number } }[] = [
       {
         // trampa simple
         w: Math.max(0.8, 2.6 - t01 * 0.9),
         run: () => {
-          this.spawnEnt("trap", Math.floor(rand(0, 3)), -70);
-          return 1;
+          const traps = this.fixTrapLevel([Math.floor(rand(0, 3))]);
+          this.spawnEnt("trap", traps[0], -70);
+          return { h: 0, mul: 1 };
         },
       },
       {
-        // doble trampa: un carril libre (+ queso de premio)
+        // doble trampa: SIEMPRE deja un carril libre alcanzable (+ queso de premio)
         w: 0.35 + t01 * 2.3,
         run: () => {
-          const free = Math.floor(rand(0, 3));
-          for (let l = 0; l < 3; l++) if (l !== free) this.spawnEnt("trap", l, -70);
-          if (Math.random() < 0.55) this.spawnEnt("cheese", free, -70 - 150);
-          return 1.45;
+          const shuffled = [0, 1, 2].sort(() => Math.random() - 0.5);
+          const traps = this.fixTrapLevel([shuffled[0], shuffled[1]]);
+          for (const l of traps) this.spawnEnt("trap", l, -70);
+          const free = [0, 1, 2].find((l) => !traps.includes(l));
+          let h = 0;
+          if (free !== undefined && Math.random() < 0.55) {
+            this.spawnEnt("cheese", free, -70 - 150);
+            h = 150;
+          }
+          return { h, mul: 1.35 };
         },
       },
       {
-        // dos trampas escalonadas
+        // dos trampas escalonadas (cada nivel se valida contra la ruta)
         w: t01 * 1.4,
         run: () => {
-          const a = Math.floor(rand(0, 3));
+          const a = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
+          const b = this.fixTrapLevel([clamp(a + pick([-1, 1, 2]), 0, 2)])[0];
           this.spawnEnt("trap", a, -70);
-          this.spawnEnt("trap", clamp(a + pick([-1, 1, 2]), 0, 2), -70 - 300);
-          return 1.5;
+          this.spawnEnt("trap", b, -70 - 320);
+          return { h: 320, mul: 1.2 };
         },
       },
       {
         // trampa + queso cebo delante de ella (riesgo/recompensa)
         w: 1.6,
         run: () => {
-          const lane = Math.floor(rand(0, 3));
-          this.spawnEnt("trap", lane, -70);
-          // En los extremos no usamos clamp: podría devolver el mismo carril.
-          const side = lane === 0 ? 1 : lane === 2 ? 1 : pick([0, 2]);
-          // 140px mas alto = ~0.28 s para reaccionar al cebo
+          const t = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
+          const side = t === 1 ? pick([0, 2]) : 1;
+          this.spawnEnt("trap", t, -70);
+          // 140px más alto = tiempo para reaccionar al cebo
           this.spawnEnt("cheese", side, -70 - 140);
-          return 1.15;
+          return { h: 140, mul: 1.05 };
         },
       },
       {
@@ -413,7 +601,8 @@ export class RatonGame {
           const lane = Math.floor(rand(0, 3));
           const n = Math.floor(rand(3, 6));
           for (let i = 0; i < n; i++) this.spawnEnt("cheese", lane, -70 - i * 130);
-          return 1 + n * 0.22;
+          this.pathLanes = this.widenLanes(this.pathLanes);
+          return { h: (n - 1) * 130, mul: 0.9 };
         },
       },
       {
@@ -421,7 +610,8 @@ export class RatonGame {
         w: 1,
         run: () => {
           for (let l = 0; l < 3; l++) this.spawnEnt("cheese", l, -70);
-          return 1;
+          this.pathLanes = this.widenLanes(this.pathLanes);
+          return { h: 0, mul: 0.9 };
         },
       },
       {
@@ -433,17 +623,24 @@ export class RatonGame {
             this.spawnEnt("cheese", lane, -70 - i * 150);
             lane = clamp(lane + pick([-1, 1]), 0, 2);
           }
-          return 1.2;
+          this.pathLanes = this.widenLanes(this.pathLanes);
+          return { h: 450, mul: 0.9 };
         },
       },
     ];
     const total = patterns.reduce((s, p) => s + p.w, 0);
     let r = Math.random() * total;
+    let result = { h: 0, mul: 1 };
     for (const p of patterns) {
       r -= p.w;
-      if (r <= 0) return p.run();
+      if (r <= 0) {
+        result = p.run();
+        break;
+      }
     }
-    return 1;
+    // seguro final: jamás un muro de 3 trampas ni trampas pegadas en un carril
+    this.enforcePassable();
+    return result;
   }
 
   /* ---------------- update ---------------- */
@@ -467,8 +664,9 @@ export class RatonGame {
     if (this.state === "playing") {
       this.elapsed += rawDt;
       if (this.graceT > 0) this.graceT -= rawDt;
+      if (this.invulnT > 0) this.invulnT -= rawDt;
       const t01 = clamp(this.elapsed / RAMP_T, 0, 1);
-      const ease = t01 * t01 * (3 - 2 * t01);
+      const ease = t01 * t01; // curva gradual: lento al inicio, sube al final
       this.speed = START_SPEED + (MAX_SPEED - START_SPEED) * ease;
       this.distance += (this.speed * dt * this.auraMult()) / PX_PER_M;
 
@@ -492,21 +690,24 @@ export class RatonGame {
           size: 30,
           stroke: "#faf4e4",
         });
-        for (let i = 0; i < 16; i++) {
-          this.parts.push({
-            x: this.W / 2 + rand(-70, 70),
-            y: this.H * 0.3 + rand(-20, 20),
-            vx: rand(-60, 60),
-            vy: rand(-40, 90),
-        life: rand(0.8, 1.6),
-        max: 1.6,
-        kind: "petal",
-        scale: rand(0.7, 1.3),
-        color: PALETTE.petal,
-        rot: rand(0, Math.PI * 2),
-        vr: rand(-4, 4),
-        w: 0.35,
-      });
+        // Cantidad de pétalos del hito reducida de 16 a 6 para optimizar rendimiento
+        if (this.parts.length < MAX_PARTICLES) {
+          for (let i = 0; i < 6; i++) {
+            this.parts.push({
+              x: this.W / 2 + rand(-50, 50),
+              y: this.H * 0.3 + rand(-15, 15),
+              vx: rand(-40, 40),
+              vy: rand(-20, 60),
+              life: rand(0.6, 1.2),
+              max: 1.2,
+              kind: "petal",
+              scale: rand(0.6, 1.1),
+              color: PALETTE.petal,
+              rot: rand(0, Math.PI * 2),
+              vr: rand(-2, 2),
+              w: 0.35,
+            });
+          }
         }
         this.milestoneNext += 500;
       }
@@ -515,11 +716,20 @@ export class RatonGame {
     // scroll del mundo
     this.scroll += this.speed * dt;
 
-    // generación de patrones
+    // generación de patrones (cursor de filas)
     if (this.state === "playing" && this.graceT <= 0 && this.scroll >= this.nextRowAt) {
-      const mul = this.spawnRow();
-      const gap = clamp(this.speed * 0.55, 200, 560) * mul * rand(0.92, 1.14);
-      this.nextRowAt = this.scroll + gap;
+      const { h, mul } = this.spawnRow();
+      // El hueco entre filas se mide en TIEMPO de reacción (0.75 s → 1.25 s),
+      // así que en píxeles CRECE con la velocidad. La siguiente fila nace
+      // siempre por encima de la altura total del patrón + hueco.
+      const baseGap = this.speed * (0.75 + this.speedFrac() * 0.5);
+      const gap = clamp(baseGap, 230, 1000) * mul * rand(0.97, 1.1);
+      this.nextRowAt = this.scroll + h + gap;
+    }
+
+    // fresa expira
+    if (this.strawberryUntil && this.elapsed > this.strawberryUntil) {
+      this.strawberryUntil = 0;
     }
 
     // decoración de los márgenes
@@ -547,6 +757,8 @@ export class RatonGame {
     }
     for (const d of this.decor) d.y += this.speed * dt;
     this.decor = this.decor.filter((d) => d.y < this.H + 80);
+    if (this.decor.length > MAX_DECOR)
+      this.decor.splice(0, this.decor.length - MAX_DECOR);
 
     // nubes (deriva de viento sobre el cielo, con parallax de velocidad)
     for (const c of this.clouds) {
@@ -590,11 +802,21 @@ export class RatonGame {
           }
         }
         if (e.type === "trap") {
-          if (hitX < this.laneW() * 0.38 && Math.abs(dy) < 40) {
+          const overlapping = hitX < this.laneW() * 0.38 && Math.abs(dy) < 40;
+          // Una trampa ya cerrada (snapping) no vuelve a golpear, y durante la
+          // invulnerabilidad el ratón atraviesa las trampas sin perder vidas.
+          if (overlapping && !e.snapping && this.invulnT <= 0) {
             this.die(e);
           } else if (!e.counted && dy > 52) {
             e.counted = true;
-            if (hitX < this.laneW() * 1.18) this.nearMiss();
+            if (this.invulnT <= 0 && hitX < this.laneW() * 1.18) this.nearMiss();
+          }
+        }
+        if ((e.type === "strawberry" || e.type === "bandaid") && !e.taken) {
+          if (hitX < this.laneW() * 0.5 && Math.abs(dy) < 40) {
+            e.taken = true;
+            if (e.type === "strawberry") this.collectStrawberry(ex, e.y);
+            else this.collectBandaid(ex, e.y);
           }
         }
       }
@@ -638,23 +860,33 @@ export class RatonGame {
     }
     this.floats = this.floats.filter((f) => f.life > 0);
 
-    // pétalos ambientales
-    if (Math.random() < rawDt * 3.2) {
+    // pétalos ambientales: nacen poco a poco, viven lo justo para cruzar la
+    // pantalla y dejan siempre un margen de partículas reservado a los efectos.
+    if (
+      this.parts.length < MAX_PARTICLES - PETAL_RESERVE &&
+      Math.random() < rawDt * 1.1
+    ) {
       this.parts.push({
         x: rand(0, this.W),
         y: -20,
-        vx: rand(-28, 4),
-        vy: rand(24, 60),
-        life: rand(2.5, 4.5),
-        max: 4.5,
+        vx: rand(-20, 2),
+        vy: rand(20, 48),
+        life: rand(1.4, 2.2),
+        max: 2.2,
         kind: "petal",
-        scale: rand(0.6, 1.1),
+        scale: rand(0.5, 0.9),
         color: PALETTE.petal,
         rot: rand(0, Math.PI * 2),
-        vr: rand(-2, 2),
+        vr: rand(-1.5, 1.5),
         w: 0.35,
       });
     }
+
+    // recorte FIFO de listas: tope duro de partículas y textos flotantes
+    if (this.parts.length > MAX_PARTICLES)
+      this.parts.splice(0, this.parts.length - MAX_PARTICLES);
+    if (this.floats.length > MAX_FLOATS)
+      this.floats.splice(0, this.floats.length - MAX_FLOATS);
 
     this.shake *= Math.pow(0.001, rawDt);
     if (this.shake < 0.2) this.shake = 0;
@@ -667,6 +899,8 @@ export class RatonGame {
       aura: this.aura,
       auraMult: this.auraMult(),
       speed01: clamp((this.speed - START_SPEED) / (MAX_SPEED - START_SPEED), 0, 1),
+      lives: this.lives,
+      strawberry: this.strawberryUntil > this.elapsed,
     });
   }
 
@@ -674,12 +908,17 @@ export class RatonGame {
     this.cheeseN++;
     this.combo++;
     this.comboTimer = 1.9;
-    const amount = 100 * this.combo;
+    const berry = this.strawberryUntil > this.elapsed;
+    // fresa: multiplicador ×20 de la distancia por queso (20 segundos)
+    const amount = 100 * this.combo * (berry ? 20 : 1);
     this.distance += amount;
     this.sound.cheese(this.combo);
-    buzz(12);
-    const label =
-      this.combo > 1 ? `+${amount} ×${this.combo}` : `+${amount}`;
+    this.vib(12);
+    const label = berry
+      ? `+${amount} ¡×20!`
+      : this.combo > 1
+        ? `+${amount} ×${this.combo}`
+        : `+${amount}`;
     this.floats.push({
       x,
       y: y - 26,
@@ -691,22 +930,25 @@ export class RatonGame {
       size: this.combo > 1 ? 24 : 20,
       stroke: "#faf4e4",
     });
-    for (let i = 0; i < 8; i++) {
-      const a = (i / 8) * Math.PI * 2;
-      this.parts.push({
-        x,
-        y,
-        vx: Math.cos(a) * rand(40, 110),
-        vy: Math.sin(a) * rand(40, 110),
-        life: rand(0.3, 0.55),
-        max: 0.55,
-        kind: "spark",
-        scale: rand(0.6, 1),
-        color: PALETTE.cheese,
-        rot: 0,
-        vr: 0,
-        w: 0.25,
-      });
+    // Cantidad de chispas de queso reducida de 8 a 4 para optimización extrema
+    if (this.parts.length < MAX_PARTICLES) {
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + rand(0, 0.5);
+        this.parts.push({
+          x,
+          y,
+          vx: Math.cos(a) * rand(35, 80),
+          vy: Math.sin(a) * rand(35, 80),
+          life: rand(0.25, 0.45),
+          max: 0.45,
+          kind: "spark",
+          scale: rand(0.5, 0.8),
+          color: PALETTE.cheese,
+          rot: 0,
+          vr: 0,
+          w: 0.25,
+        });
+      }
     }
   }
 
@@ -714,7 +956,7 @@ export class RatonGame {
     this.aura++;
     this.auraMax = Math.max(this.auraMax, this.aura);
     this.sound.aura();
-    buzz(8);
+    this.vib(8);
     this.floats.push({
       x: this.player.x,
       y: this.playerY() - 70,
@@ -727,50 +969,154 @@ export class RatonGame {
       stroke: "#faf4e4",
     });
     const py = this.playerY();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      this.parts.push({
-        x: this.player.x + Math.cos(a) * 22,
-        y: py + Math.sin(a) * 22,
-        vx: Math.cos(a) * 70,
-        vy: Math.sin(a) * 70,
-        life: 0.45,
-        max: 0.45,
-        kind: "spark",
-        scale: 0.8,
-        color: "#f2b13d",
-        rot: 0,
-        vr: 0,
-        w: 0.25,
-      });
+    // Cantidad de chispas de aura reducida de 6 a 3 para fluidez perfecta
+    if (this.parts.length < MAX_PARTICLES) {
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2 + rand(0, 0.3);
+        this.parts.push({
+          x: this.player.x + Math.cos(a) * 18,
+          y: py + Math.sin(a) * 18,
+          vx: Math.cos(a) * 55,
+          vy: Math.sin(a) * 55,
+          life: 0.35,
+          max: 0.35,
+          kind: "spark",
+          scale: 0.7,
+          color: "#f2b13d",
+          rot: 0,
+          vr: 0,
+          w: 0.25,
+        });
+      }
     }
   }
 
   private die(trap: Ent) {
     if (this.state !== "playing") return;
-    this.state = "dying";
+    this.lives--;
     trap.snapping = true;
-    this.deathT = 0;
+    trap.counted = true;
     this.shake = 16;
     this.flash = 0.55;
     this.sound.death();
-    buzz([50, 40, 90]);
+    this.vib([50, 40, 90]);
     const tx = this.laneX(trap.lane);
-    for (let i = 0; i < 14; i++) {
-      this.parts.push({
-        x: tx + rand(-20, 20),
-        y: trap.y + rand(-14, 14),
-        vx: rand(-90, 90),
-        vy: rand(-120, 40),
-        life: rand(0.4, 0.8),
-        max: 0.8,
-        kind: "dust",
-        scale: rand(1, 2),
-        color: "rgba(110,95,70,0.4)",
-        rot: 0,
-        vr: 0,
-        w: 1,
+    // Cantidad de polvo reducida de 14 a 6 para fluidez extrema
+    if (this.parts.length < MAX_PARTICLES) {
+      for (let i = 0; i < 6; i++) {
+        this.parts.push({
+          x: tx + rand(-15, 15),
+          y: trap.y + rand(-10, 10),
+          vx: rand(-60, 60),
+          vy: rand(-80, 20),
+          life: rand(0.3, 0.6),
+          max: 0.6,
+          kind: "dust",
+          scale: rand(0.8, 1.5),
+          color: "rgba(110,95,70,0.35)",
+          rot: 0,
+          vr: 0,
+          w: 1,
+        });
+      }
+    }
+
+    if (this.lives <= 0) {
+      // sin vidas: fin de la partida (slow-motion y panel)
+      this.state = "dying";
+      this.deathT = 0;
+      this.stopTilt();
+    } else {
+      // perdió UNA vida: invulnerable 1.6 s (parpadea) y sigue corriendo
+      this.invulnT = 1.6;
+      this.aura = 0; // pierde el aura al fallar
+      this.combo = 0;
+      this.floats.push({
+        x: this.W / 2,
+        y: this.H * 0.4,
+        vy: -26,
+        life: 1.3,
+        max: 1.3,
+        text: `-1 VIDA · quedan ${this.lives}`,
+        color: "#c23e1c",
+        size: 26,
+        stroke: "#faf4e4",
       });
+    }
+  }
+
+  private collectStrawberry(x: number, y: number) {
+    // Fresa ahora da un multiplicador por 10s (solamente 10 segundos)
+    this.strawberryUntil = this.elapsed + 10;
+    this.sound.cheese(3);
+    this.vib(14);
+    this.floats.push({
+      x: this.W / 2,
+      y: this.H * 0.38,
+      vy: -30,
+      life: 1.2,
+      max: 1.2,
+      text: "¡FRESA! queso ×20 por 10 s",
+      color: "#c23e1c",
+      size: 24,
+      stroke: "#faf4e4",
+    });
+    // Cantidad de chispas de fresa reducida de 14 a 6 para optimizar rendimiento
+    if (this.parts.length < MAX_PARTICLES) {
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        this.parts.push({
+          x,
+          y,
+          vx: Math.cos(a) * rand(40, 80),
+          vy: Math.sin(a) * rand(40, 80),
+          life: rand(0.3, 0.5),
+          max: 0.5,
+          kind: "spark",
+          scale: rand(0.6, 0.9),
+          color: "#e4572e",
+          rot: 0,
+          vr: 0,
+          w: 0.3,
+        });
+      }
+    }
+  }
+
+  private collectBandaid(x: number, y: number) {
+    if (this.lives < this.maxLives) this.lives++;
+    this.sound.cheese(2);
+    this.vib(14);
+    this.floats.push({
+      x: this.W / 2,
+      y: this.H * 0.38,
+      vy: -30,
+      life: 1.2,
+      max: 1.2,
+      text: this.lives >= this.maxLives ? "Máximo!" : "+1 vida",
+      color: "#2e8b6b",
+      size: 28,
+      stroke: "#faf4e4",
+    });
+    // Cantidad de chispas de curita reducida de 12 a 5 para óptimo rendimiento
+    if (this.parts.length < MAX_PARTICLES) {
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        this.parts.push({
+          x,
+          y,
+          vx: Math.cos(a) * rand(35, 75),
+          vy: Math.sin(a) * rand(35, 75),
+          life: rand(0.3, 0.5),
+          max: 0.5,
+          kind: "spark",
+          scale: rand(0.5, 0.8),
+          color: "#9bd1b0",
+          rot: 0,
+          vr: 0,
+          w: 0.3,
+        });
+      }
     }
   }
 
@@ -800,6 +1146,10 @@ export class RatonGame {
       ctx.translate(ex, e.y);
       if (e.type === "cheese") {
         drawCheese(ctx, t + e.seed * 10, 0.86);
+      } else if (e.type === "strawberry") {
+        drawStrawberry(ctx, t + e.seed * 10, 0.8);
+      } else if (e.type === "bandaid") {
+        drawBandaid(ctx, t + e.seed * 10, 0.8);
       } else {
         const near =
           this.state === "playing" && e.lane === this.player.lane
@@ -810,9 +1160,10 @@ export class RatonGame {
       ctx.restore();
     }
 
-    // jugador
+    // jugador (parpadea mientras es invulnerable tras perder una vida)
     ctx.save();
     ctx.translate(this.player.x, py);
+    if (this.invulnT > 0 && Math.floor(t / 90) % 2 === 0) ctx.globalAlpha = 0.35;
     drawMouse(ctx, {
       t,
       s: (this.laneW() / 118) * 1.06,

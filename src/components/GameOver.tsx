@@ -28,7 +28,7 @@ export default function GameOver({ data, onRetry, onMenu }: Props) {
         initial={{ y: 40, scale: 0.92, opacity: 0 }}
         animate={{ y: 0, scale: 1, opacity: 1 }}
         transition={{ type: "spring", stiffness: 260, damping: 22, delay: 0.08 }}
-        className="washi-grain relative max-h-[94dvh] w-full max-w-[330px] overflow-y-auto rounded-3xl border-2 border-[#2e2a26]/10 bg-[#faf4e4] px-6 pb-6 pt-7 shadow-[0_8px_0_rgba(0,0,0,0.25)]"
+        className="washi-grain relative max-h-[94dvh] w-full max-w-[330px] rounded-3xl border-2 border-[#2e2a26]/10 bg-[#faf4e4] px-6 pb-6 pt-7 shadow-[0_8px_0_rgba(0,0,0,0.25)]"
       >
         {/* sello hanko de nuevo récord */}
         {data.isRecord && (

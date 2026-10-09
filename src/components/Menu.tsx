@@ -59,7 +59,7 @@ export default function Menu({ save, settings, onSettings, onPlay }: Props) {
         ネズミ快跑
       </div>
 
-      <div className="relative z-10 flex h-full min-h-0 flex-col items-center justify-between gap-4 overflow-y-auto px-6 py-5">
+      <div className="relative z-10 flex h-full min-h-0 flex-col items-center justify-between gap-4 px-6 py-5">
         {/* cabecera */}
         <motion.div
           initial={{ opacity: 0, y: -18 }}

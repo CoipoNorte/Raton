@@ -17,6 +17,11 @@ body {
   height: 100%;
   overscroll-behavior: none;
   background: #211d19;
+  /* jamás permitir desplazamiento de la página en el juego */
+  position: fixed;
+  width: 100%;
+  overflow: hidden;
+  touch-action: none;
 }
 
 body {
