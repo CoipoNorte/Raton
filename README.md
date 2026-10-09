@@ -1,4 +1,4 @@
-# RATÓN (ラトン) — el juego del queso
+# [RATÓN (ラトン) — el juego del queso](https://coiponorte.github.io/Raton/)
 
 ![RATÓN](public/og.png)
 
@@ -43,81 +43,6 @@ totales y aura máxima.
 - **Framer Motion** — menús y el sello hanko de nuevo récord
 - **IndexedDB** — persistencia del récord
 - **gh-pages** — despliegue a GitHub Pages
-
-## Inicio rápido (desarrollo)
-
-```bash
-npm install
-npm run dev
-```
-
-Abre la URL local y, para probarlo como en el móvil, usa las herramientas de
-desarrollo del navegador en modo dispositivo (o sírvete la IP local desde tu
-teléfono).
-
-## Despliegue en GitHub Pages (repo "Raton")
-
-### Paso 0 — una sola vez por máquina
-
-Necesitas [Node.js](https://nodejs.org) y [Git](https://git-scm.com) instalados y
-tu identidad de git configurada:
-
-```bash
-git config --global user.name  "Tu Nombre"
-git config --global user.email "tu@email.com"
-```
-
-### Paso 1 — prepara el repo
-
-1. Crea en GitHub un repositorio llamado **`Raton`** (público).
-2. En tu PC, en la carpeta con estos archivos:
-
-```bash
-git init
-git add .
-git commit -m "RATON: primera version"
-git branch -M main
-git remote add origin https://github.com/TU-USUARIO/Raton.git
-git push -u origin main
-```
-
-### Paso 2 — despliega (doble clic)
-
-Ejecuta **`deploy.bat`** (Windows). El script hace exactamente:
-
-```
-npm install   →   npm run build   →   npx gh-pages -d dist
-```
-
-y publica el contenido de `dist/` en la rama **`gh-pages`** de tu repo.
-
-> Si prefieres hacerlo a mano o estás en Mac/Linux:
-> ```bash
-> npm install
-> npm run build
-> npx gh-pages -d dist
-> ```
-
-### Paso 3 — activa Pages en GitHub
-
-En tu repo: **Settings → Pages → Source: rama `gh-pages`, carpeta `/ (root)` → Save**.
-
-En 1-2 minutos tu juego estará en:
-
-```
-https://TU-USUARIO.github.io/Raton/
-```
-
-### ¿Por qué funciona sin configurar nada más?
-
-`vite.config.ts` usa `base: "./"`, así todos los assets se cargan con rutas
-**relativas**: el juego funciona en cualquier subcarpeta de GitHub Pages, en tu
-usuario `.github.io`, en un dominio propio y hasta abriendo el `dist` en local.
-Si algún día quieres rutas absolutas, cambia `base` a `"/Raton/"`.
-
-> Opcional: si quieres el comando clásico `npm run deploy`, añade a
-> `package.json`, dentro de `"scripts"`:
-> `"deploy": "gh-pages -d dist"`
 
 ## Estructura del proyecto
 
