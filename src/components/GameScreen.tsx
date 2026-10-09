@@ -213,15 +213,14 @@ export default function GameScreen({
       gameRef.current = null;
       // al salir de la pista la música vuelve a su calma de menú
       sound.setMusicIntensity(0);
-      sound.resumeMusic();
+      sound.setGamePaused(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // pausar la partida también serena la música (no se queda sonando en sordina)
   useEffect(() => {
-    if (paused) sound.pauseMusic();
-    else sound.resumeMusic();
+    sound.setGamePaused(paused);
   }, [paused, sound]);
 
   const togglePause = () => gameRef.current?.setPaused(!paused);

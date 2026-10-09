@@ -22,10 +22,15 @@ de sakura.
 
 ### Opciones (menú ⚙ o en pausa)
 
-- **Efectos**: volumen maestro (0–100) y silencio total.
+- **Efectos**: volumen 0–100 y silencio. Afecta solo al canal de efectos
+  (queso, trampas, aura, jingles) — la música sigue sonando.
 - **Música de fondo**: interruptor + volumen propio. Es un secuenciador *live*
-  sobre escala **Miyako-bushi** (koto, bajo, drone y taiko) que **sube de tempo y
-  densidad con la velocidad del juego**; se pausa con la partida.
+  sobre escala **Miyako-bushi** (koto de 3 parciales, bajo, drone y taiko) que
+  **suena en el menú (modo calma) y en la partida (sube de tempo y densidad con
+  tu velocidad)**. Arranca con tu primer toque (política de autoplay del
+  navegador). **En segundo/tercer plano se corta de inmediato**: al ocultar la
+  pestaña se suspende el contexto de audio (ni música ni efectos suenan fuera),
+  y al volver se reanuda solo.
 - **Controles táctiles**, elegidos a tu gusto:
   - **Deslizar** — táctil puro: arrastra el dedo (también vale un toque rápido a un lado).
   - **Zonas** — toques invisibles `< >`: toca la mitad izquierda o derecha.
@@ -57,6 +62,81 @@ totales y aura máxima.
 - **Framer Motion** — menús y el sello hanko de nuevo récord
 - **IndexedDB** — persistencia del récord
 - **gh-pages** — despliegue a GitHub Pages
+
+## Inicio rápido (desarrollo)
+
+```bash
+npm install
+npm run dev
+```
+
+Abre la URL local y, para probarlo como en el móvil, usa las herramientas de
+desarrollo del navegador en modo dispositivo (o sírvete la IP local desde tu
+teléfono).
+
+## Despliegue en GitHub Pages (repo "Raton")
+
+### Paso 0 — una sola vez por máquina
+
+Necesitas [Node.js](https://nodejs.org) y [Git](https://git-scm.com) instalados y
+tu identidad de git configurada:
+
+```bash
+git config --global user.name  "Tu Nombre"
+git config --global user.email "tu@email.com"
+```
+
+### Paso 1 — prepara el repo
+
+1. Crea en GitHub un repositorio llamado **`Raton`** (público).
+2. En tu PC, en la carpeta con estos archivos:
+
+```bash
+git init
+git add .
+git commit -m "RATON: primera version"
+git branch -M main
+git remote add origin https://github.com/TU-USUARIO/Raton.git
+git push -u origin main
+```
+
+### Paso 2 — despliega (doble clic)
+
+Ejecuta **`deploy.bat`** (Windows). El script hace exactamente:
+
+```
+npm install   →   npm run build   →   npx gh-pages -d dist
+```
+
+y publica el contenido de `dist/` en la rama **`gh-pages`** de tu repo.
+
+> Si prefieres hacerlo a mano o estás en Mac/Linux:
+> ```bash
+> npm install
+> npm run build
+> npx gh-pages -d dist
+> ```
+
+### Paso 3 — activa Pages en GitHub
+
+En tu repo: **Settings → Pages → Source: rama `gh-pages`, carpeta `/ (root)` → Save**.
+
+En 1-2 minutos tu juego estará en:
+
+```
+https://TU-USUARIO.github.io/Raton/
+```
+
+### ¿Por qué funciona sin configurar nada más?
+
+`vite.config.ts` usa `base: "./"`, así todos los assets se cargan con rutas
+**relativas**: el juego funciona en cualquier subcarpeta de GitHub Pages, en tu
+usuario `.github.io`, en un dominio propio y hasta abriendo el `dist` en local.
+Si algún día quieres rutas absolutas, cambia `base` a `"/Raton/"`.
+
+> Opcional: si quieres el comando clásico `npm run deploy`, añade a
+> `package.json`, dentro de `"scripts"`:
+> `"deploy": "gh-pages -d dist"`
 
 ## Estructura del proyecto
 
@@ -103,11 +183,11 @@ camino alcanzable** (máx. 1 carril por hueco) entre patrones consecutivos.
 
 | Constante | Límite | Qué pasa al superarlo |
 | --- | --- | --- |
-| `MAX_ENTITIES` | `3` en pantalla | entra una nueva y sale la más antigua que **ya pasó** al ratón (sin pops a la vista) |
-| `MAX_PARTICLES` | `30` | cola FIFO: se descarta la partícula más vieja |
-| `PETAL_RESERVE` | `10` | siempre quedan partidas para los efectos de comer/chocar |
-| `MAX_FLOATS` | `4` | los textos flotantes viejos se retiran antes de terminar |
-| `MAX_DECOR` | `10` | matas, piedras y torii de los márgenes se reciclan |
+| Queso y trampas | **sin tope** | son el corazón del juego; el generador pone 4–8 a la vista |
+| `MAX_PARTICLES` | `48` | cola FIFO: se descarta la partícula más vieja |
+| `PETAL_RESERVE` | `12` | siempre quedan partidas para los efectos de comer/chocar |
+| `MAX_FLOATS` | `8` | los `+100` / `+AURA` viejos se retiran antes de terminar |
+| `MAX_DECOR` | `12` | matas, piedras y torii de los márgenes se reciclan |
 
 El hueco entre filas se mide en **tiempo de reacción** (0.75 s → 1.25 s), así que
 en píxeles crece con la velocidad: más rápido = más distancia vertical, jamás

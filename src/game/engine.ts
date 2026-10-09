@@ -106,14 +106,14 @@ const RAMP_T = 110; // segundos hasta velocidad máxima (rampa larga y gradual)
 const PX_PER_M = 52;
 const LANES = 3;
 
-/* --- topes de recursos: nunca saturar el dispositivo ---
- * Pocos elementos en pantalla = dibujo barato y CPU libre para el input.
- * Al pasarse, se descarta lo más antiguo (FIFO), así el límite es real. */
-const MAX_ENTITIES = 3; // trampas + quesos + power-ups simultáneos
-const MAX_PARTICLES = 30; // partículas activas en total
-const PETAL_RESERVE = 10; // partidas reservadas para efectos (que siempre se vean)
-const MAX_FLOATS = 4; // textos flotantes
-const MAX_DECOR = 10; // matas/piedras/torii de los márgenes
+/* --- topes SOLO de feedback visual (pétalos, números, títulos) ---
+ * Queso y trampas son el corazón del juego: no se recortan.
+ * Un móvil aguanta ~50 sprites 2D sin problema; el techo está en
+ * notificaciones y partículas, que es donde se acumulaba de verdad. */
+const MAX_PARTICLES = 48;
+const PETAL_RESERVE = 12; // hueco reservado para chispas de queso/choque
+const MAX_FLOATS = 8; // "+100", "+AURA", hitos… el feedback que se siente
+const MAX_DECOR = 12;
 
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
@@ -424,25 +424,6 @@ export class RatonGame {
    * acababa alineando trampas de filas distintas en un muro).
    */
   private spawnEnt(type: EntType, lane: number, yOff: number) {
-    // Tope estricto de entidades simultáneas (3). Si ya está lleno,
-    // retiramos la más antigua que YA pasó al ratón: desaparece fuera de la
-    // zona crítica, así nunca hay un "pop" a mitad del camino. Si todas están
-    // por delante, simplemente no se genera la nueva (nace fuera de pantalla).
-    if (this.ents.length >= MAX_ENTITIES) {
-      const limit = this.playerY() + 30;
-      let idx = -1;
-      let bestY = -Infinity;
-      for (let i = 0; i < this.ents.length; i++) {
-        const e = this.ents[i];
-        if (e.taken) continue;
-        if (e.y > limit && e.y > bestY) {
-          bestY = e.y;
-          idx = i;
-        }
-      }
-      if (idx < 0) return;
-      this.ents.splice(idx, 1);
-    }
     this.ents.push({
       type,
       lane,
@@ -454,6 +435,11 @@ export class RatonGame {
       snapT: 0,
       taken: false,
     });
+  }
+
+  /** Trail de queso en un carril (el "combo food" del endless runner). */
+  private spawnCheeseTrail(lane: number, n: number, y0: number, step: number) {
+    for (let i = 0; i < n; i++) this.spawnEnt("cheese", lane, y0 - i * step);
   }
 
   /**
@@ -524,107 +510,115 @@ export class RatonGame {
   }
 
   /**
-   * Genera una fila de patrón (selección ponderada).
-   * Devuelve { h, mul }: h = altura del patrón por encima de la línea base
-   * (px), mul = multiplicador del hueco posterior. El cursor de filas coloca
-   * la siguiente fila SIEMPRE por encima de h + hueco → nunca hay solapes.
+   * Generador estilo "weighted bag" de endless runner (Subway Surfers / Temple Run):
+   *  - Al inicio: mucho queso, trampas sueltas, siempre un hueco.
+   *  - Con el tiempo: más dobles y cebos, pero NUNCA un muro de 3.
+   *  - El queso va pegado a las trampas (trail en el carril libre) para que
+   *    esquivar se sienta como recompensa, no como vacío.
+   * Devuelve { h, mul } para el cursor de filas.
    */
   private spawnRow(): { h: number; mul: number } {
     const t01 = clamp(this.elapsed / RAMP_T, 0, 1);
+    const STEP = 95; // separación de quesos en un trail (combo fácil de leer)
 
-    // --- fila de power-up (muy rara): fresa o band-aid en un carril alcanzable ---
+    // --- power-up raro, en un carril que SÍ puedes alcanzar ---
     if (this.scroll >= this.nextPowerupAt) {
       const options = this.widenLanes(this.pathLanes);
       const lane = options[Math.floor(rand(0, options.length))] ?? 1;
-      // Fresa ahora es súper exclusiva (25% del ya de por sí raro powerup, 75% bandaid si le faltan vidas, o bandaid por defecto)
-      const wantBandaid = this.lives < this.maxLives ? Math.random() < 0.75 : true;
+      const wantBandaid = this.lives < this.maxLives ? Math.random() < 0.7 : true;
       this.spawnEnt(wantBandaid ? "bandaid" : "strawberry", lane, -70);
       this.pathLanes = options;
-      // Intervalo mucho más largo para reducir drásticamente su aparición
-      this.nextPowerupAt = this.scroll + rand(4500, 8000);
-      return { h: 0, mul: 0.95 };
+      this.nextPowerupAt = this.scroll + rand(3800, 7000);
+      return { h: 0, mul: 0.85 };
     }
 
     const patterns: { w: number; run: () => { h: number; mul: number } }[] = [
       {
-        // trampa simple
-        w: Math.max(0.8, 2.6 - t01 * 0.9),
+        // TRAIL de queso en un carril (el snack del juego)
+        w: 2.8 - t01 * 0.6,
         run: () => {
-          const traps = this.fixTrapLevel([Math.floor(rand(0, 3))]);
-          this.spawnEnt("trap", traps[0], -70);
-          return { h: 0, mul: 1 };
+          const options = this.widenLanes(this.pathLanes);
+          const lane = options[Math.floor(rand(0, options.length))] ?? 1;
+          const n = 4 + Math.floor(rand(0, 3)); // 4–6
+          this.spawnCheeseTrail(lane, n, -70, STEP);
+          this.pathLanes = this.widenLanes([lane]);
+          return { h: (n - 1) * STEP, mul: 0.72 };
         },
       },
       {
-        // doble trampa: SIEMPRE deja un carril libre alcanzable (+ queso de premio)
-        w: 0.35 + t01 * 2.3,
+        // queso en LOS TRES carriles (descanso gratificante)
+        w: 1.4 - t01 * 0.4,
+        run: () => {
+          for (let l = 0; l < 3; l++) this.spawnEnt("cheese", l, -70);
+          this.pathLanes = [0, 1, 2];
+          return { h: 0, mul: 0.7 };
+        },
+      },
+      {
+        // zig-zag de queso (te mueve entre carriles, enseña el control)
+        w: 1.5,
+        run: () => {
+          let lane = this.pathLanes[Math.floor(rand(0, this.pathLanes.length))] ?? 1;
+          for (let i = 0; i < 5; i++) {
+            this.spawnEnt("cheese", lane, -70 - i * STEP);
+            const next = clamp(lane + pick([-1, 1]), 0, 2);
+            lane = next;
+          }
+          this.pathLanes = this.widenLanes([lane]);
+          return { h: 4 * STEP, mul: 0.75 };
+        },
+      },
+      {
+        // TRAMPA simple + trail de queso en OTRO carril (el patrón estrella)
+        w: 2.4,
+        run: () => {
+          const t = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
+          const free = pick([0, 1, 2].filter((l) => l !== t));
+          this.spawnEnt("trap", t, -70);
+          const n = 3 + Math.floor(rand(0, 3));
+          this.spawnCheeseTrail(free, n, -70 - STEP, STEP);
+          return { h: n * STEP, mul: 0.78 };
+        },
+      },
+      {
+        // DOBLE trampa + trail de queso en el hueco (siempre 1 carril libre)
+        w: 0.5 + t01 * 2.4,
         run: () => {
           const shuffled = [0, 1, 2].sort(() => Math.random() - 0.5);
           const traps = this.fixTrapLevel([shuffled[0], shuffled[1]]);
           for (const l of traps) this.spawnEnt("trap", l, -70);
           const free = [0, 1, 2].find((l) => !traps.includes(l));
           let h = 0;
-          if (free !== undefined && Math.random() < 0.55) {
-            this.spawnEnt("cheese", free, -70 - 150);
-            h = 150;
+          if (free !== undefined) {
+            const n = 3 + Math.floor(rand(0, 2));
+            this.spawnCheeseTrail(free, n, -70 - STEP, STEP);
+            h = n * STEP;
           }
-          return { h, mul: 1.35 };
+          return { h, mul: 0.95 };
         },
       },
       {
-        // dos trampas escalonadas (cada nivel se valida contra la ruta)
-        w: t01 * 1.4,
-        run: () => {
-          const a = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
-          const b = this.fixTrapLevel([clamp(a + pick([-1, 1, 2]), 0, 2)])[0];
-          this.spawnEnt("trap", a, -70);
-          this.spawnEnt("trap", b, -70 - 320);
-          return { h: 320, mul: 1.2 };
-        },
-      },
-      {
-        // trampa + queso cebo delante de ella (riesgo/recompensa)
-        w: 1.6,
+        // cebo: queso al lado de la trampa (riesgo/recompensa, 1 carril de diferencia)
+        w: 1.4 + t01 * 0.6,
         run: () => {
           const t = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
           const side = t === 1 ? pick([0, 2]) : 1;
           this.spawnEnt("trap", t, -70);
-          // 140px más alto = tiempo para reaccionar al cebo
-          this.spawnEnt("cheese", side, -70 - 140);
-          return { h: 140, mul: 1.05 };
+          this.spawnCheeseTrail(side, 3, -70 - 90, STEP);
+          return { h: 90 + 2 * STEP, mul: 0.82 };
         },
       },
       {
-        // fila de quesos en un carril
-        w: 1.6,
+        // trampas escalonadas (te obliga a cambiar dos veces, con queso en el medio)
+        w: t01 * 1.6,
         run: () => {
-          const lane = Math.floor(rand(0, 3));
-          const n = Math.floor(rand(3, 6));
-          for (let i = 0; i < n; i++) this.spawnEnt("cheese", lane, -70 - i * 130);
-          this.pathLanes = this.widenLanes(this.pathLanes);
-          return { h: (n - 1) * 130, mul: 0.9 };
-        },
-      },
-      {
-        // fila horizontal de queso (los 3 carriles)
-        w: 1,
-        run: () => {
-          for (let l = 0; l < 3; l++) this.spawnEnt("cheese", l, -70);
-          this.pathLanes = this.widenLanes(this.pathLanes);
-          return { h: 0, mul: 0.9 };
-        },
-      },
-      {
-        // zig-zag de queso
-        w: 1.1,
-        run: () => {
-          let lane = Math.floor(rand(0, 3));
-          for (let i = 0; i < 4; i++) {
-            this.spawnEnt("cheese", lane, -70 - i * 150);
-            lane = clamp(lane + pick([-1, 1]), 0, 2);
-          }
-          this.pathLanes = this.widenLanes(this.pathLanes);
-          return { h: 450, mul: 0.9 };
+          const a = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
+          this.spawnEnt("trap", a, -70);
+          const mid = pick([0, 1, 2].filter((l) => l !== a));
+          this.spawnCheeseTrail(mid, 2, -70 - 140, STEP);
+          const b = this.fixTrapLevel([clamp(a + pick([-1, 1]), 0, 2)])[0];
+          this.spawnEnt("trap", b, -70 - 140 - 2 * STEP);
+          return { h: 140 + 2 * STEP, mul: 1.0 };
         },
       },
     ];
@@ -638,7 +632,6 @@ export class RatonGame {
         break;
       }
     }
-    // seguro final: jamás un muro de 3 trampas ni trampas pegadas en un carril
     this.enforcePassable();
     return result;
   }
@@ -676,8 +669,14 @@ export class RatonGame {
         if (this.comboTimer <= 0) this.combo = 0;
       }
 
-      // hitos de distancia
+      // hitos de distancia. Si un queso ×20 salta varios de golpe,
+      // se celebra UNA vez: si no, suena una metralleta frame a frame.
       if (this.distance >= this.milestoneNext) {
+        let reached = this.milestoneNext;
+        while (this.distance >= this.milestoneNext) {
+          reached = this.milestoneNext;
+          this.milestoneNext += 500;
+        }
         this.sound.milestone();
         this.floats.push({
           x: this.W / 2,
@@ -685,7 +684,7 @@ export class RatonGame {
           vy: -14,
           life: 1.8,
           max: 1.8,
-          text: `${this.milestoneNext}m おめでとう!`,
+          text: `${reached}m おめでとう!`,
           color: PALETTE.sun,
           size: 30,
           stroke: "#faf4e4",
@@ -709,7 +708,6 @@ export class RatonGame {
             });
           }
         }
-        this.milestoneNext += 500;
       }
     }
 
@@ -719,11 +717,11 @@ export class RatonGame {
     // generación de patrones (cursor de filas)
     if (this.state === "playing" && this.graceT <= 0 && this.scroll >= this.nextRowAt) {
       const { h, mul } = this.spawnRow();
-      // El hueco entre filas se mide en TIEMPO de reacción (0.75 s → 1.25 s),
-      // así que en píxeles CRECE con la velocidad. La siguiente fila nace
-      // siempre por encima de la altura total del patrón + hueco.
-      const baseGap = this.speed * (0.75 + this.speedFrac() * 0.5);
-      const gap = clamp(baseGap, 230, 1000) * mul * rand(0.97, 1.1);
+      // Hueco en TIEMPO de reacción: 0.50 s al inicio → 0.78 s a tope.
+      // En píxeles crece con la velocidad, así nunca se amontonan, pero
+      // la pista se siente llena (queso + trampa siempre a la vista).
+      const baseGap = this.speed * (0.5 + this.speedFrac() * 0.28);
+      const gap = clamp(baseGap, 160, 620) * mul * rand(0.94, 1.08);
       this.nextRowAt = this.scroll + h + gap;
     }
 
@@ -904,16 +902,24 @@ export class RatonGame {
     });
   }
 
+  private cheeseSndAt = 0;
+
   private collectCheese(x: number, y: number) {
     this.cheeseN++;
     this.combo++;
     this.comboTimer = 1.9;
     const berry = this.strawberryUntil > this.elapsed;
-    // fresa: multiplicador ×20 de la distancia por queso (20 segundos)
+    // UN solo premio ×20, no 20 quesos sueltos.
     const amount = 100 * this.combo * (berry ? 20 : 1);
     this.distance += amount;
-    this.sound.cheese(this.combo);
-    this.vib(12);
+    // Un trail succionado de golpe no debe sonar como metralleta:
+    // un pluck cada 90 ms como máximo. Con fresa, un acorde único.
+    if (this.elapsed - this.cheeseSndAt > 0.09) {
+      this.cheeseSndAt = this.elapsed;
+      if (berry) this.sound.jackpot();
+      else this.sound.cheese(this.combo);
+      this.vib(12);
+    }
     const label = berry
       ? `+${amount} ¡×20!`
       : this.combo > 1
@@ -1048,7 +1054,7 @@ export class RatonGame {
   private collectStrawberry(x: number, y: number) {
     // Fresa ahora da un multiplicador por 10s (solamente 10 segundos)
     this.strawberryUntil = this.elapsed + 10;
-    this.sound.cheese(3);
+    this.sound.jackpot();
     this.vib(14);
     this.floats.push({
       x: this.W / 2,

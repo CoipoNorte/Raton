@@ -38,10 +38,44 @@ export default function App() {
     sound.setMusicEnabled(settings.music);
   }, [sound, settings.volume, settings.muted, settings.music, settings.musicVol]);
 
-  // al volver al menú, la música sigue sonando tranquila
+  // modo musical según pantalla: menú = calma · juego = tempo por velocidad
   useEffect(() => {
-    if (screen === "menu") sound.resumeMusic();
+    sound.setMusicMode(screen === "menu" ? "menu" : "game");
+    if (screen === "menu") {
+      sound.setMusicIntensity(0);
+      sound.setGamePaused(false);
+    }
   }, [screen, sound]);
+
+  // el primer gesto en cualquier parte desbloquea el audio (menú incluido)
+  useEffect(() => {
+    const unlock = () => sound.unlock();
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, [sound]);
+
+  // segundo / tercer plano: nada suena fuera de la pestaña
+  useEffect(() => {
+    const onVis = () => sound.setHidden(document.hidden);
+    const onHide = () => sound.setHidden(true);
+    const onShow = () => {
+      if (!document.hidden) sound.setHidden(false);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("blur", onHide);
+    window.addEventListener("focus", onShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("blur", onHide);
+      window.removeEventListener("focus", onShow);
+    };
+  }, [sound]);
 
   useEffect(() => () => sound.stopMusic(), [sound]);
 
