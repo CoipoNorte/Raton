@@ -6,6 +6,12 @@ import GameOver, { type OverData } from "./components/GameOver";
 import { SoundEngine } from "./game/audio";
 import { loadSave, applyRun, type SaveData } from "./game/db";
 import { loadSettings, saveSettings, type GameSettings } from "./game/settings";
+import {
+  gyroSupport,
+  requestGyroPermission,
+  tiltStateFromSupport,
+  type TiltUIState,
+} from "./game/gyro";
 import type { RunResult } from "./game/engine";
 
 type Screen = "menu" | "game";
@@ -37,6 +43,21 @@ export default function App() {
     sound.setMusicVolume(settings.musicVol);
     sound.setMusicEnabled(settings.music);
   }, [sound, settings.volume, settings.muted, settings.music, settings.musicVol]);
+
+  // ------- permiso del giroscopio (se pide desde el clic, no al montar) -------
+  const [tiltState, setTiltState] = useState<TiltUIState>(() =>
+    tiltStateFromSupport(gyroSupport())
+  );
+  const activateTilt = useCallback(() => {
+    // requestGyroPermission se invoca sincronizado en este gesto:
+    // así Safari muestra el diálogo nativo de permiso.
+    void requestGyroPermission().then((r) => {
+      if (r === "granted") setTiltState("on");
+      else if (r === "denied") setTiltState("denied");
+      else if (r === "unsupported") setTiltState("unsupported");
+      // "needs-gesture": se queda en "needs" hasta un clic válido
+    });
+  }, []);
 
   // modo musical según pantalla: menú = calma · juego = tempo por velocidad
   useEffect(() => {
@@ -151,6 +172,8 @@ export default function App() {
               settings={settings}
               onSettings={applySettings}
               onPlay={startGame}
+              tiltState={tiltState}
+              onTiltActivate={activateTilt}
             />
           )}
         </AnimatePresence>

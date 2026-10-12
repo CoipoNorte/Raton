@@ -1,4 +1,4 @@
-# [RATÓN (ラトン) — el juego del queso](https://coiponorte.github.io/Raton/)
+# RATÓN (ラトン) — el juego del queso
 
 ![RATÓN](public/og.png)
 
@@ -14,7 +14,7 @@ de sakura.
 
 | Acción | Efecto |
 | --- | --- |
-| **Deslizar ← / →** (o tocar mitad izq/der, o flechas del teclado) | Cambiar de carril |
+| **Deslizar ← / →**, tocar mitad izq/der (modo Zonas) o flechas del teclado | Cambiar de carril |
 | **Queso** | **+100 m** de distancia. Quesos seguidos = **combo** (×2, ×3…) |
 | **Trampa de ratón** | Fin de la partida. Una y se acabó la fiesta |
 | **Rozar una trampa** (near-miss) | **+1 AURA**: multiplica la velocidad a la que ganas metros y envuelve al ratón en llamas doradas |
@@ -31,12 +31,26 @@ de sakura.
   navegador). **En segundo/tercer plano se corta de inmediato**: al ocultar la
   pestaña se suspende el contexto de audio (ni música ni efectos suenan fuera),
   y al volver se reanuda solo.
-- **Controles táctiles**, elegidos a tu gusto:
-  - **Deslizar** — táctil puro: arrastra el dedo (también vale un toque rápido a un lado).
-  - **Zonas** — toques invisibles `< >`: toca la mitad izquierda o derecha.
-  - **Botones** — lo mismo que Zonas, pero con botones `< >` visibles en pantalla.
-  - **Giroscopio** — inclina el celular a los lados para moverte (pide permiso de
-    orientación en iOS la primera vez).
+- **Controles táctiles**, dos canales claros:
+  - **Deslizar** — SOLO arrastrar el dedo (los toques por área son de Zonas,
+    no de este modo). **Un solo carril por gesto**: el excedente del arrastre
+    se descarta y hay un enfriamiento de 110 ms, así un latigazo rápido nunca
+    salta dos carriles. El candado de eje ignora los gestos verticales.
+  - **Zonas** — toca la mitad izquierda o derecha: respuesta inmediata.
+  - **Giroscopio** — inclina el celular. Umbral de 12° con histéresis (se
+    desarma al volver a 4°) para que inclinar y sostener no dispare ráfagas,
+    centro auto-calibrado, y corrige los ejes si giras la pantalla.
+    **Permiso**: al elegir Giroscopio en Opciones, el juego verifica el estado
+    y te lleva al botón «Activar giroscopio» — el permiso se pide *desde ese
+    clic*, porque Safari solo muestra el diálogo dentro de un gesto (pedirlo
+    al montar era lo que causaba denegaciones fantasma). Si ya lo denegaste,
+    el panel te dice dónde reactivarlo (Safari: «aA» → Ajustes del sitio web →
+    Acceso a movimiento · Chrome: candado → Permisos → Sensores). Se escuchan
+    `deviceorientation` **y** `deviceorientationabsolute`, porque algunos
+    Chrome de Android solo emiten el segundo.
+
+> **Nota**: el modo «Botones» se eliminó; era idéntico a Zonas. Si lo tenías
+> guardado, se migra solo a Zonas.
 - **Vibrar**: activa/desactiva la vibración háptica.
 
 Todo se guarda automáticamente en el dispositivo.

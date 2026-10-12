@@ -1,29 +1,40 @@
 import {
   MoveHorizontal,
   Hand,
-  ChevronsLeftRight,
   Smartphone,
   Volume2,
   VolumeX,
   Music,
   Vibrate,
+  Check,
+  TriangleAlert,
 } from "lucide-react";
 import type { ControlMode, GameSettings } from "../game/settings";
+import type { TiltUIState } from "../game/gyro";
 
 interface Props {
   settings: GameSettings;
   onChange: (patch: Partial<GameSettings>) => void;
+  /** Estado del permiso de giroscopio (para guiar al jugador) */
+  tiltState?: TiltUIState;
+  /** Se llama SINCRONIZADO dentro del clic: así Safari muestra el diálogo */
+  onTiltActivate?: () => void;
 }
 
 const OPTIONS: { id: ControlMode; name: string; desc: string; Icon: typeof MoveHorizontal }[] = [
-  { id: "swipe", name: "Deslizar", desc: "arrastra el dedo", Icon: MoveHorizontal },
+  { id: "swipe", name: "Deslizar", desc: "1 carril por gesto", Icon: MoveHorizontal },
   { id: "zones", name: "Zonas", desc: "toca izq / der", Icon: Hand },
-  { id: "buttons", name: "Botones", desc: "botones < >", Icon: ChevronsLeftRight },
   { id: "tilt", name: "Giroscopio", desc: "inclina el cel", Icon: Smartphone },
 ];
 
 /** Panel de opciones compartido por menú y pausa: sonido, música, controles y vibración */
-export default function SettingsPanel({ settings, onChange }: Props) {
+export default function SettingsPanel({ settings, onChange, tiltState, onTiltActivate }: Props) {
+  // Al elegir Giroscopio pedimos el permiso EN ESTE MISMO CLIC:
+  // Safari solo muestra el diálogo si nace de un gesto del usuario.
+  const pickControl = (id: ControlMode) => {
+    onChange({ control: id });
+    if (id === "tilt") onTiltActivate?.();
+  };
   return (
     <div className="w-full max-w-[340px] rounded-2xl border-2 border-[#2e2a26]/10 bg-[#faf4e4] p-4 shadow-[0_6px_0_rgba(0,0,0,0.25)]">
       <div className="flex items-center justify-between">
@@ -94,24 +105,24 @@ export default function SettingsPanel({ settings, onChange }: Props) {
       {/* ---------- CONTROLES ---------- */}
       <div className="mt-3.5">
         <SectionLabel>Controles táctiles</SectionLabel>
-        <div className="mt-2 grid grid-cols-4 gap-1.5">
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
           {OPTIONS.map(({ id, name, desc, Icon }) => {
             const active = settings.control === id;
             return (
               <SBtn
                 key={id}
-                onClick={() => onChange({ control: id })}
+                onClick={() => pickControl(id)}
                 label={`Control: ${name}`}
-                className={`flex flex-col items-center gap-1 rounded-xl border-2 px-0.5 py-2 ${
+                className={`flex flex-col items-center gap-1 rounded-xl border-2 px-1 py-2.5 ${
                   active
                     ? "border-[#e4572e] bg-[#e4572e]/10 text-[#c23e1c]"
                     : "border-[#2e2a26]/10 bg-[#fffdf4] text-[#2e2a26]"
                 }`}
               >
                 <Icon className="h-5 w-5" strokeWidth={2.4} />
-                <span className="text-[10px] font-black leading-none">{name}</span>
+                <span className="text-[11px] font-black leading-none">{name}</span>
                 <span
-                  className={`text-[8px] font-bold leading-tight ${
+                  className={`text-[9px] font-bold leading-tight ${
                     active ? "text-[#c23e1c]/70" : "text-[#2e2a26]/45"
                   }`}
                 >
@@ -121,6 +132,53 @@ export default function SettingsPanel({ settings, onChange }: Props) {
             );
           })}
         </div>
+        {settings.control === "tilt" && (
+          <div className="mt-2">
+            {tiltState === "on" ? (
+              <p className="flex items-center gap-1.5 rounded-xl border-2 border-[#2e8b53]/30 bg-[#2e8b53]/10 px-3 py-2 text-[11px] font-black text-[#2e8b53]">
+                <Check className="h-4 w-4 shrink-0" strokeWidth={3} />
+                Giroscopio activo · inclina para moverte
+              </p>
+            ) : tiltState === "unsupported" ? (
+              <p className="flex items-start gap-1.5 rounded-xl border-2 border-[#2e2a26]/10 bg-[#fffdf4] px-3 py-2 text-[11px] font-bold leading-snug text-[#2e2a26]/60">
+                <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#c77d12]" />
+                Este navegador no expone el giroscopio. Prueba con Zonas o
+                Deslizar.
+              </p>
+            ) : tiltState === "denied" ? (
+              <div className="rounded-xl border-2 border-[#c77d12]/40 bg-[#f2a83b]/10 px-3 py-2">
+                <p className="flex items-start gap-1.5 text-[11px] font-bold leading-snug text-[#2e2a26]/70">
+                  <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#c77d12]" />
+                  Permiso denegado. Para activarlo: Safari → «aA» → Ajustes del
+                  sitio web → Acceso a movimiento. En Chrome: candado →
+                  Permisos → Sensores de movimiento.
+                </p>
+                <button
+                  type="button"
+                  onClick={onTiltActivate}
+                  className="mt-2 w-full rounded-full bg-[#e4572e] py-2 text-xs font-black text-[#fffdf4] shadow-[0_3px_0_#a63a1a] transition-transform active:scale-95"
+                >
+                  Reintentar
+                </button>
+              </div>
+            ) : (
+              <div>
+                <button
+                  type="button"
+                  onClick={onTiltActivate}
+                  className="flex w-full items-center justify-center gap-2 rounded-full bg-[#e4572e] py-2.5 text-sm font-black text-[#fffdf4] shadow-[0_3px_0_#a63a1a] transition-transform active:scale-95"
+                >
+                  <Smartphone className="h-4 w-4" />
+                  Activar giroscopio
+                </button>
+                <p className="mt-1.5 text-center text-[10px] font-bold leading-snug text-[#2e2a26]/45">
+                  Safari te pedirá permiso de movimiento. El centro se calibra
+                  solo con tu postura.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ---------- VIBRAR ---------- */}

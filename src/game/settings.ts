@@ -4,7 +4,7 @@
  * Persistidos en localStorage (los mismos para el menú y la pausa).
  */
 
-export type ControlMode = "swipe" | "zones" | "buttons" | "tilt";
+export type ControlMode = "swipe" | "zones" | "tilt";
 
 export interface GameSettings {
   /** Volumen maestro (efectos) 0..1 */
@@ -42,10 +42,14 @@ export function loadSettings(): GameSettings {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const p = JSON.parse(raw) as Partial<GameSettings>;
+      // "buttons" ya no existe: se migra a "zones" (eran lo mismo, sin botones)
+      const saved = (p.control ?? "swipe") as string;
       const control: ControlMode =
-        p.control === "zones" || p.control === "buttons" || p.control === "tilt"
-          ? p.control!
-          : "swipe";
+        saved === "tilt"
+          ? "tilt"
+          : saved === "zones" || saved === "buttons"
+            ? "zones"
+            : "swipe";
       return {
         volume: clamp01(typeof p.volume === "number" ? p.volume : 0.8),
         muted: Boolean(p.muted),

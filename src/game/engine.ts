@@ -21,6 +21,7 @@ import {
 } from "./draw";
 import type { SoundEngine } from "./audio";
 import { buzz } from "./audio";
+import { requestGyroPermission } from "./gyro";
 
 export interface HudState {
   distance: number;
@@ -30,6 +31,8 @@ export interface HudState {
   speed01: number;
   lives: number;
   strawberry: boolean;
+  /** Inclinación normalizada -1..1 (indicador del modo giroscopio) */
+  tilt: number;
 }
 
 export interface RunResult {
@@ -145,7 +148,14 @@ export class RatonGame {
   nextPowerupAt = 900;
   // --- giroscopio ---
   tiltActive = false;
-  private tiltHandler?: (e: DeviceOrientationEvent) => void;
+  tiltStatus: "off" | "on" | "denied" | "unsupported" = "off";
+  /** Inclinación -1..1 para el indicador del HUD */
+  tiltValue = 0;
+  private tiltArmed = 0; // -1 ya giró a la izq · 1 ya giró a la der · 0 libre
+  private tiltAbsSeen = false; // el navegador emite deviceorientationabsolute
+  private tiltZero = 0; // centro calibrado (cada celular llega con offset)
+  private onTiltRaw?: (e: DeviceOrientationEvent) => void;
+  private onTiltAbs?: (e: DeviceOrientationEvent) => void;
   vibrateEnabled = true;
 
   private elapsed = 0;
@@ -294,42 +304,91 @@ export class RatonGame {
     this.cb.onPauseChange?.(p);
   }
 
-  /** Activa el giroscopio (modo tilt). Devuelve false si el navegador no deja. */
-  async requestTilt(): Promise<boolean> {
-    const DOE = (
-      window as unknown as {
-        DeviceOrientationEvent?: {
-          requestPermission?: () => Promise<"granted" | "denied">;
-        };
-      }
-    ).DeviceOrientationEvent;
-    try {
-      if (DOE && typeof DOE.requestPermission === "function") {
-        const res = await DOE.requestPermission();
-        if (res !== "granted") return false;
-      }
-    } catch {
-      /* noop */
+  /**
+   * Giroscopio para Safari (iOS 13+) y Chrome/Android.
+   * Claves: requestPermission() DEBE llamarse dentro de un gesto del usuario
+   * (por eso se dispara desde un tap/botón, no al montar), y algunos Chrome
+   * solo emiten `deviceorientationabsolute`, así escuchamos ambos.
+   * Devuelve "needs" si faltó el gesto (no es un rechazo del usuario).
+   */
+  async enableTilt(): Promise<"on" | "denied" | "unsupported" | "needs"> {
+    if (this.tiltActive) return "on";
+    const perm = await requestGyroPermission();
+    if (perm === "unsupported") {
+      this.tiltStatus = "unsupported";
+      return "unsupported";
     }
-    if (typeof window.addEventListener !== "function") return false;
+    if (perm === "denied") {
+      this.tiltStatus = "denied";
+      return "denied";
+    }
+    if (perm === "needs-gesture") {
+      // Safari sin gesto válido: queda pendiente, NO denegado
+      return "needs";
+    }
     this.tiltActive = true;
-    const handler = (e: DeviceOrientationEvent) => {
-      if (this.state !== "playing" || this.paused) return;
-      const g = typeof e.gamma === "number" ? e.gamma : 0; // -90..90 (izq/der)
-      if (g < -10) this.move(-1, true);
-      else if (g > 10) this.move(1, true);
-    };
-    this.tiltHandler = handler;
-    window.addEventListener("deviceorientation", handler);
-    return true;
+    this.tiltStatus = "on";
+    this.tiltArmed = 0;
+    this.onTiltRaw = (e) => this.handleTilt(e, false);
+    this.onTiltAbs = (e) => this.handleTilt(e, true);
+    window.addEventListener("deviceorientation", this.onTiltRaw);
+    window.addEventListener(
+      "deviceorientationabsolute",
+      this.onTiltAbs as EventListener
+    );
+    return "on";
+  }
+
+  /** Umbral + histéresis: UN carril por gesto de inclinación, nunca ráfagas */
+  private handleTilt(e: DeviceOrientationEvent, absolute: boolean) {
+    if (absolute) this.tiltAbsSeen = true;
+    else if (this.tiltAbsSeen) return; // no doblar el mismo gesto
+
+    const gamma = typeof e.gamma === "number" ? e.gamma : 0;
+    const beta = typeof e.beta === "number" ? e.beta : 0;
+
+    // el juego es vertical; si giran el celular corregimos los ejes
+    const rawAngle =
+      (typeof screen !== "undefined" && screen.orientation?.angle) ||
+      (window as unknown as { orientation?: number }).orientation ||
+      0;
+    const angle = ((Math.round(rawAngle / 90) * 90) % 360 + 360) % 360;
+    let v = gamma;
+    if (angle === 90) v = -beta;
+    else if (angle === 180) v = -gamma;
+    else if (angle === 270) v = beta;
+
+    // calibrado suave del centro (el "cero" de cada celular varía unos grados)
+    this.tiltZero += (v - this.tiltZero) * 0.04;
+    const dev = v - this.tiltZero;
+    this.tiltValue = clamp(dev / 22, -1, 1);
+
+    const TRIGGER = 12; // grados para cambiar de carril
+    const RELEASE = 4; // grados para volver a armar
+    if (Math.abs(dev) < RELEASE) this.tiltArmed = 0;
+    if (this.state !== "playing" || this.paused) return;
+    if (dev > TRIGGER && this.tiltArmed !== 1) {
+      this.tiltArmed = 1;
+      this.move(1, true);
+    } else if (dev < -TRIGGER && this.tiltArmed !== -1) {
+      this.tiltArmed = -1;
+      this.move(-1, true);
+    }
   }
 
   stopTilt() {
     this.tiltActive = false;
-    if (this.tiltHandler) {
-      window.removeEventListener("deviceorientation", this.tiltHandler);
-      this.tiltHandler = undefined;
-    }
+    this.tiltValue = 0;
+    this.tiltArmed = 0;
+    this.tiltAbsSeen = false;
+    if (this.onTiltRaw) window.removeEventListener("deviceorientation", this.onTiltRaw);
+    if (this.onTiltAbs)
+      window.removeEventListener(
+        "deviceorientationabsolute",
+        this.onTiltAbs as EventListener
+      );
+    this.onTiltRaw = undefined;
+    this.onTiltAbs = undefined;
   }
 
   /** Vibración respetando el ajuste del jugador */
@@ -899,6 +958,7 @@ export class RatonGame {
       speed01: clamp((this.speed - START_SPEED) / (MAX_SPEED - START_SPEED), 0, 1),
       lives: this.lives,
       strawberry: this.strawberryUntil > this.elapsed,
+      tilt: this.tiltActive ? this.tiltValue : 0,
     });
   }
 

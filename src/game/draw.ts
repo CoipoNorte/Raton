@@ -515,12 +515,16 @@ export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // orejas grandes
+  // orejas grandes — desde atrás vemos el DORSO del pabellón: gris peludo.
+  // El interior rosado mira hacia adelante (hacia donde corre el ratón),
+  // así que NO se le ve un círculo rosa centrado: solo se insinúa un filo
+  // rosado muy tenue en el borde superior, como la luz traspasando la oreja.
   const earWig = Math.sin(phase * 0.5) * 1.6;
   for (const side of [-1, 1]) {
     ctx.save();
     ctx.translate(side * 15, -24 + earWig);
     ctx.rotate(side * 0.35);
+    // pabellón (dorso)
     ctx.beginPath();
     ctx.ellipse(0, 0, 11.5, 13, 0, 0, Math.PI * 2);
     ctx.fillStyle = PALETTE.fur;
@@ -528,10 +532,21 @@ export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
     ctx.lineWidth = 2.4;
     ctx.fill();
     ctx.stroke();
+    // interior del dorso: pelaje más oscuro, no rosa
     ctx.beginPath();
-    ctx.ellipse(0, 1.5, 6, 7.4, 0, 0, Math.PI * 2);
-    ctx.fillStyle = PALETTE.pink;
+    ctx.ellipse(0, 2, 6, 7.2, 0, 0, Math.PI * 2);
+    ctx.fillStyle = PALETTE.furDeep;
+    ctx.globalAlpha = 0.32;
     ctx.fill();
+    ctx.globalAlpha = 1;
+    // filo rosado traslúcido en el borde superior (luz a través de la oreja)
+    ctx.beginPath();
+    ctx.ellipse(0, -1.5, 9.6, 11, 0, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.strokeStyle = PALETTE.pink;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 

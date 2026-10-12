@@ -6,15 +6,18 @@ import CheeseIcon from "./CheeseIcon";
 import SettingsPanel from "./SettingsPanel";
 import type { SaveData } from "../game/db";
 import type { GameSettings } from "../game/settings";
+import type { TiltUIState } from "../game/gyro";
 
 interface Props {
   save: SaveData | null;
   settings: GameSettings;
   onSettings: (patch: Partial<GameSettings>) => void;
   onPlay: () => void;
+  tiltState?: TiltUIState;
+  onTiltActivate?: () => void;
 }
 
-export default function Menu({ save, settings, onSettings, onPlay }: Props) {
+export default function Menu({ save, settings, onSettings, onPlay, tiltState, onTiltActivate }: Props) {
   const [showSettings, setShowSettings] = useState(false);
   return (
     <div className="absolute inset-0 overflow-hidden bg-[#faf4e4] washi-grain no-select">
@@ -37,7 +40,12 @@ export default function Menu({ save, settings, onSettings, onPlay }: Props) {
             exit={{ opacity: 0 }}
             className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-[#211d19]/70 px-4 backdrop-blur-[3px]"
           >
-            <SettingsPanel settings={settings} onChange={onSettings} />
+            <SettingsPanel
+              settings={settings}
+              onChange={onSettings}
+              tiltState={tiltState}
+              onTiltActivate={onTiltActivate}
+            />
             <motion.button
               whileTap={{ scale: 0.92 }}
               onClick={() => setShowSettings(false)}
