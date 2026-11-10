@@ -14,9 +14,8 @@ export interface GameSettings {
   music: boolean;
   musicVol: number;
   /**
-   * swipe   → táctil: arrastra el dedo en cualquier dirección
-   * zones   → botones invisibles: toca la mitad izquierda/derecha
-   * buttons → igual que zonas, pero con botones < > visibles en pantalla
+   * swipe   → deslizar: un gesto = un carril (precisión)
+   * zones   → zonas: toca la mitad izquierda/derecha
    * tilt    → giroscopio: inclina el celular para moverte
    */
   control: ControlMode;
@@ -42,12 +41,12 @@ export function loadSettings(): GameSettings {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const p = JSON.parse(raw) as Partial<GameSettings>;
-      // "buttons" ya no existe: se migra a "zones" (eran lo mismo, sin botones)
-      const saved = (p.control ?? "swipe") as string;
+      // "buttons" existió antes (idéntico a Zonas): migra solo a "zones"
+      const rawControl = p.control as string | undefined;
       const control: ControlMode =
-        saved === "tilt"
-          ? "tilt"
-          : saved === "zones" || saved === "buttons"
+        rawControl === "zones" || rawControl === "tilt"
+          ? rawControl
+          : rawControl === "buttons"
             ? "zones"
             : "swipe";
       return {

@@ -168,7 +168,8 @@ export function drawCheese(
   ctx: CanvasRenderingContext2D,
   t: number,
   s: number,
-  glow = true
+  glow = true,
+  stars = true
 ) {
   const bob = Math.sin(t * 0.004) * 2;
   ctx.save();
@@ -223,21 +224,23 @@ export function drawCheese(
   ctx.moveTo(-9, -7);
   ctx.quadraticCurveTo(-4, -13, 2, -14);
   ctx.stroke();
-  // destellos
-  const tw = (Math.sin(t * 0.006) + 1) / 2;
-  ctx.globalAlpha = 0.4 + tw * 0.5;
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1.8;
-  const star = (sx: number, sy: number, r: number) => {
-    ctx.beginPath();
-    ctx.moveTo(sx - r, sy);
-    ctx.lineTo(sx + r, sy);
-    ctx.moveTo(sx, sy - r);
-    ctx.lineTo(sx, sy + r);
-    ctx.stroke();
-  };
-  star(-20, -14, 4);
-  star(21, -8, 3);
+  // destellos (la versión cacheada los dibuja aparte para que sigan titilando)
+  if (stars) {
+    const tw = (Math.sin(t * 0.006) + 1) / 2;
+    ctx.globalAlpha = 0.4 + tw * 0.5;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.8;
+    const star = (sx: number, sy: number, r: number) => {
+      ctx.beginPath();
+      ctx.moveTo(sx - r, sy);
+      ctx.lineTo(sx + r, sy);
+      ctx.moveTo(sx, sy - r);
+      ctx.lineTo(sx, sy + r);
+      ctx.stroke();
+    };
+    star(-20, -14, 4);
+    star(21, -8, 3);
+  }
   ctx.restore();
 }
 
@@ -425,20 +428,40 @@ export function drawBandaid(
   ctx.restore();
 }
 
-/* ---------------- RATÓN (vista trasera corriendo) ---------------- */
+/* ---------------- RATÓN (4 direcciones + vista trasera y frontal) ---------------- */
+export type MouseDir = "up" | "down" | "left" | "right";
+
 export interface MousePose {
   t: number; // tiempo global ms
   s: number; // escala (1 ≈ tamaño carril)
-  lean: number; // inclinación al cambiar de carril
+  lean: number; // inclinación al girar o cambiar de carril
   running: boolean;
   auraLevel: number; // 0..1 intensidad del aura dorada
   dead: boolean;
+  /** Dirección hacia la que mira el ratón:
+   *  - "up"    → de espaldas corriendo hacia adelante (runner y snake arriba)
+   *  - "down"  → de frente mirando al jugador (menú principal y snake abajo)
+   *  - "left"  → de perfil corriendo a la izquierda (snake)
+   *  - "right" → de perfil corriendo a la derecha (snake)
+   */
+  dir?: MouseDir;
+  /** 0..1: fotograma fijo de un ciclo de carrera que encaja en bucle perfecto
+   *  (lo usa la caché de sprites de las crías). Sin él, se anima con `t`. */
+  cycle?: number;
 }
 
 export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
   const { s, lean, running, auraLevel, dead } = p;
-  const phase = p.t * (running ? 0.02 : 0.004);
+  const dir: MouseDir = p.dir ?? "up";
+  const loop = typeof p.cycle === "number";
+  const phase = loop
+    ? (p.cycle as number) * Math.PI * 2
+    : p.t * (running ? 0.02 : 0.004);
   const bob = running ? Math.abs(Math.sin(phase)) * 2.6 : Math.sin(phase) * 1.2;
+  // parpadeo natural breve cada ~3.4 s (no en fotogramas cacheados)
+  const blinkCycle = (p.t % 3400) / 3400;
+  const blinking = !dead && !loop && blinkCycle > 0.955;
+
   ctx.save();
   ctx.scale(s, s);
 
@@ -446,60 +469,108 @@ export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
   if (auraLevel > 0 && !dead) {
     const pulse = 0.75 + Math.sin(p.t * 0.008) * 0.25;
     const r = 44 + auraLevel * 16;
-    const g = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r);
+    const g = ctx.createRadialGradient(0, -2, r * 0.3, 0, -2, r);
     g.addColorStop(0, `rgba(242,177,61,${0.34 * auraLevel * pulse})`);
     g.addColorStop(0.7, `rgba(242,177,61,${0.16 * auraLevel * pulse})`);
     g.addColorStop(1, "rgba(242,177,61,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(0, -4, r, 0, Math.PI * 2);
+    ctx.arc(0, -2, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // sombra
+  // sombra bajo el cuerpo
+  const horiz = dir === "left" || dir === "right";
   ctx.fillStyle = "rgba(46,42,38,0.18)";
   ctx.beginPath();
-  ctx.ellipse(0, 26, 24, 8, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // cola (serpentea)
-  const sway = Math.sin(phase * 0.7) * 5;
-  ctx.strokeStyle = PALETTE.tail;
-  ctx.lineWidth = 3.4;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(0, 20);
-  ctx.bezierCurveTo(sway, 30, 14 + sway, 34, 20 + sway * 1.4, 28);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(20 + sway * 1.4, 28, 2.6, 0, Math.PI * 2);
-  ctx.fillStyle = PALETTE.tail;
+  ctx.ellipse(0, horiz ? 20 : 26, horiz ? 26 : 23, 8, 0, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.translate(0, -bob);
   ctx.rotate(lean);
-
   if (dead) ctx.rotate(Math.PI * 0.9);
 
-  // patitas traseras alternas
-  const step = running ? Math.sin(phase) * 3.2 : 0;
-  ctx.fillStyle = PALETTE.furDeep;
-  ctx.globalAlpha = 0.85;
+  if (dir === "up") {
+    drawMouseBack(ctx, phase, running, loop);
+  } else if (dir === "down") {
+    drawMouseFront(ctx, phase, running, blinking, dead, loop);
+  } else {
+    if (dir === "left") ctx.scale(-1, 1);
+    drawMouseSide(ctx, phase, running, blinking, dead, loop);
+  }
+
+  ctx.restore();
+}
+
+/** Versión cría/seguidor para el modo Snake (uno por cada queso comido) */
+export function drawBabyMouse(
+  ctx: CanvasRenderingContext2D,
+  p: Omit<MousePose, "auraLevel" | "dead"> & { auraLevel?: number; dead?: boolean }
+) {
+  drawMouse(ctx, {
+    ...p,
+    s: p.s * 0.74,
+    auraLevel: p.auraLevel ?? 0,
+    dead: p.dead ?? false,
+  });
+}
+
+/** Vista TRASERA ("up"): corriendo hacia arriba — lomo gris sin pancita, dorso de orejas */
+function drawMouseBack(
+  ctx: CanvasRenderingContext2D,
+  phase: number,
+  running: boolean,
+  loop = false
+) {
+  // en bucle (sprites) cola y orejas usan la misma frecuencia → sin saltos
+  const sway = Math.sin(loop ? phase + 1.1 : phase * 0.7) * 5;
+  const step = running ? Math.sin(phase) * 3.4 : 0;
+  const earWig = Math.sin(loop ? phase + 2.3 : phase * 0.5) * 1.6;
+
+  // cola serpenteando atrás
+  ctx.strokeStyle = PALETTE.tail;
+  ctx.lineWidth = 3.4;
+  ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.ellipse(-12, 22 + step, 5.4, 7.5, 0.2, 0, Math.PI * 2);
+  ctx.moveTo(0, 21);
+  ctx.bezierCurveTo(sway, 31, 13 + sway, 35, 19 + sway * 1.35, 29);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(19 + sway * 1.35, 29, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.tail;
+  ctx.fill();
+
+  // patitas traseras alternas
+  ctx.fillStyle = PALETTE.furDeep;
+  ctx.globalAlpha = 0.88;
+  ctx.beginPath();
+  ctx.ellipse(-11.5, 22 + step, 5.2, 7.2, 0.2, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
-  ctx.ellipse(12, 22 - step, 5.4, 7.5, -0.2, 0, Math.PI * 2);
+  ctx.ellipse(11.5, 22 - step, 5.2, 7.2, -0.2, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // cuerpo (huevo)
+  // puntas de los bigotes asomando por los costados de la cabeza
+  ctx.strokeStyle = "rgba(76,69,61,0.55)";
+  ctx.lineWidth = 1.4;
+  ctx.lineCap = "round";
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * 15, -16);
+    ctx.quadraticCurveTo(side * 22, -18, side * 26, -15);
+    ctx.moveTo(side * 16, -13);
+    ctx.quadraticCurveTo(side * 23, -13, side * 27, -10);
+    ctx.stroke();
+  }
+
+  // cuerpo dorsal (gota más estrecha en la cabeza, redondeada atrás)
   ctx.beginPath();
-  ctx.moveTo(0, -26);
-  ctx.bezierCurveTo(20, -26, 25, -6, 23, 8);
+  ctx.moveTo(0, -27);
+  ctx.bezierCurveTo(18, -27, 23, -8, 22, 9);
   ctx.bezierCurveTo(21, 22, 12, 26, 0, 26);
-  ctx.bezierCurveTo(-12, 26, -21, 22, -23, 8);
-  ctx.bezierCurveTo(-25, -6, -20, -26, 0, -26);
+  ctx.bezierCurveTo(-12, 26, -21, 22, -22, 9);
+  ctx.bezierCurveTo(-23, -8, -18, -27, 0, -27);
   ctx.closePath();
   ctx.fillStyle = PALETTE.fur;
   ctx.strokeStyle = PALETTE.furDeep;
@@ -507,24 +578,94 @@ export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
   ctx.fill();
   ctx.stroke();
 
-  // lomo más claro
+  // volumen dorsal (sombra suave en la parte baja del lomo y línea de columna sutil, SIN pancita)
   ctx.beginPath();
-  ctx.ellipse(0, 10, 13, 13, 0, 0, Math.PI * 2);
-  ctx.fillStyle = PALETTE.belly;
-  ctx.globalAlpha = 0.65;
+  ctx.ellipse(0, 15, 14, 8.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.furDeep;
+  ctx.globalAlpha = 0.14;
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // orejas grandes — desde atrás vemos el DORSO del pabellón: gris peludo.
-  // El interior rosado mira hacia adelante (hacia donde corre el ratón),
-  // así que NO se le ve un círculo rosa centrado: solo se insinúa un filo
-  // rosado muy tenue en el borde superior, como la luz traspasando la oreja.
-  const earWig = Math.sin(phase * 0.5) * 1.6;
+  ctx.beginPath();
+  ctx.moveTo(0, -10);
+  ctx.quadraticCurveTo(0, 2, 0, 12);
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.globalAlpha = 0.16;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // orejas vistas DESDE ATRÁS: dorso gris peludo (el rosa mira hacia adelante, no hacia nosotros)
   for (const side of [-1, 1]) {
     ctx.save();
-    ctx.translate(side * 15, -24 + earWig);
-    ctx.rotate(side * 0.35);
-    // pabellón (dorso)
+    ctx.translate(side * 14.5, -22 + earWig);
+    ctx.rotate(side * 0.42);
+    // pabellón posterior
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 10.5, 12.2, 0, 0, Math.PI * 2);
+    ctx.fillStyle = PALETTE.fur;
+    ctx.strokeStyle = PALETTE.furDeep;
+    ctx.lineWidth = 2.4;
+    ctx.fill();
+    ctx.stroke();
+    // pliegue/sombra dorsal en la base donde la oreja nace del cráneo
+    ctx.beginPath();
+    ctx.ellipse(-side * 1.2, 3, 5.8, 6.8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = PALETTE.furDeep;
+    ctx.globalAlpha = 0.28;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    // filo rosado muy sutil arriba por la luz traslúcida
+    ctx.beginPath();
+    ctx.ellipse(0, -1.2, 8.8, 10.2, 0, Math.PI * 1.18, Math.PI * 1.82);
+    ctx.strokeStyle = PALETTE.pink;
+    ctx.globalAlpha = 0.42;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  // mechón de coronilla
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-3, -27);
+  ctx.quadraticCurveTo(0, -31, 3, -27);
+  ctx.stroke();
+}
+
+/** Vista FRONTAL ("down"): mirando al jugador (Menú principal y Snake bajando) */
+function drawMouseFront(
+  ctx: CanvasRenderingContext2D,
+  phase: number,
+  running: boolean,
+  blinking: boolean,
+  dead: boolean,
+  loop = false
+) {
+  const sway = Math.sin(loop ? phase + 1.1 : phase * 0.7) * 4;
+  const step = running ? Math.sin(phase) * 2.6 : 0;
+  const earWig = Math.sin(loop ? phase + 2.3 : phase * 0.5) * 1.5;
+
+  // cola asomando por detrás a la derecha
+  ctx.strokeStyle = PALETTE.tail;
+  ctx.lineWidth = 3.2;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(12, 18);
+  ctx.bezierCurveTo(24, 22 + sway * 0.4, 30, 12 + sway, 26, 4 + sway);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(26, 4 + sway, 2.3, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.tail;
+  ctx.fill();
+
+  // orejas grandes DETRÁS del cráneo, mirando al frente con su interior rosado visible
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(side * 16, -21 + earWig);
+    ctx.rotate(side * 0.36);
     ctx.beginPath();
     ctx.ellipse(0, 0, 11.5, 13, 0, 0, Math.PI * 2);
     ctx.fillStyle = PALETTE.fur;
@@ -532,33 +673,302 @@ export function drawMouse(ctx: CanvasRenderingContext2D, p: MousePose) {
     ctx.lineWidth = 2.4;
     ctx.fill();
     ctx.stroke();
-    // interior del dorso: pelaje más oscuro, no rosa
     ctx.beginPath();
-    ctx.ellipse(0, 2, 6, 7.2, 0, 0, Math.PI * 2);
-    ctx.fillStyle = PALETTE.furDeep;
-    ctx.globalAlpha = 0.32;
+    ctx.ellipse(0, 1, 6.6, 8, 0, 0, Math.PI * 2);
+    ctx.fillStyle = PALETTE.pink;
     ctx.fill();
-    ctx.globalAlpha = 1;
-    // filo rosado traslúcido en el borde superior (luz a través de la oreja)
-    ctx.beginPath();
-    ctx.ellipse(0, -1.5, 9.6, 11, 0, Math.PI * 1.15, Math.PI * 1.85);
-    ctx.strokeStyle = PALETTE.pink;
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = 1.6;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
-  // mechón de cabeza
+  // patitas traseras abajo
+  ctx.fillStyle = PALETTE.pink;
   ctx.strokeStyle = PALETTE.furDeep;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.6;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(side * 11, 24 + (side < 0 ? step : -step) * 0.6, 5.5, 4.2, side * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // cuerpo redondeado
   ctx.beginPath();
-  ctx.moveTo(-3, -27);
-  ctx.quadraticCurveTo(0, -31, 3, -27);
+  ctx.moveTo(0, -25);
+  ctx.bezierCurveTo(19, -25, 24, -5, 22, 10);
+  ctx.bezierCurveTo(20, 22, 11, 25, 0, 25);
+  ctx.bezierCurveTo(-11, 25, -20, 22, -22, 10);
+  ctx.bezierCurveTo(-24, -5, -19, -25, 0, -25);
+  ctx.closePath();
+  ctx.fillStyle = PALETTE.fur;
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2.6;
+  ctx.fill();
   ctx.stroke();
 
+  // PANCITA crema (vista frontal: aquí sí va la pancita)
+  ctx.beginPath();
+  ctx.ellipse(0, 11, 13, 12, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.belly;
+  ctx.fill();
+
+  // manitas delanteras sobre la pancita
+  ctx.fillStyle = PALETTE.pink;
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 1.6;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(
+      side * 12,
+      8 + (side < 0 ? -step : step) * 0.7,
+      4.2,
+      3.4,
+      side * 0.35,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // mechón de frente
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-3, -25);
+  ctx.quadraticCurveTo(0, -30, 3, -25);
+  ctx.stroke();
+
+  // mejillas rosadas suaves
+  ctx.fillStyle = PALETTE.pink;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.ellipse(-12, -5, 4.2, 2.6, 0, 0, Math.PI * 2);
+  ctx.ellipse(12, -5, 4.2, 2.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // ojos
+  for (const side of [-1, 1]) {
+    const ex = side * 7.8;
+    const ey = -11;
+    if (dead) {
+      // ojos en X
+      ctx.strokeStyle = "#2e2a26";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(ex - 2.6, ey - 2.6);
+      ctx.lineTo(ex + 2.6, ey + 2.6);
+      ctx.moveTo(ex + 2.6, ey - 2.6);
+      ctx.lineTo(ex - 2.6, ey + 2.6);
+      ctx.stroke();
+    } else if (blinking) {
+      ctx.strokeStyle = "#2e2a26";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(ex, ey + 0.8, 3.2, Math.PI * 1.1, Math.PI * 1.9);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = "#2e2a26";
+      ctx.beginPath();
+      ctx.ellipse(ex, ey, 3.1, 3.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fffdf4";
+      ctx.beginPath();
+      ctx.arc(ex + 1, ey - 1.2, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // boquita w sutil
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(-4, -1.5);
+  ctx.quadraticCurveTo(-2, 1, 0, -1.5);
+  ctx.quadraticCurveTo(2, 1, 4, -1.5);
+  ctx.stroke();
+
+  // nariz rosada con brillo
+  ctx.fillStyle = "#e87c8a";
+  ctx.beginPath();
+  ctx.ellipse(0, -4.5, 3.6, 2.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.beginPath();
+  ctx.arc(-1, -5.3, 0.9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // bigotes
+  ctx.strokeStyle = "rgba(76,69,61,0.55)";
+  ctx.lineWidth = 1.3;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * 6, -5);
+    ctx.quadraticCurveTo(side * 16, -8, side * 24, -6);
+    ctx.moveTo(side * 6, -3);
+    ctx.quadraticCurveTo(side * 17, -3, side * 25, 0);
+    ctx.stroke();
+  }
+}
+
+/** Vista DE PERFIL ("right", reflejada para "left"): para modo Snake horizontal */
+function drawMouseSide(
+  ctx: CanvasRenderingContext2D,
+  phase: number,
+  running: boolean,
+  blinking: boolean,
+  dead: boolean,
+  loop = false
+) {
+  const sway = Math.sin(loop ? phase + 1.1 : phase * 0.7) * 4.5;
+  const stride = running ? Math.sin(phase) * 5.5 : 0;
+  const earWig = Math.sin(loop ? phase + 2.3 : phase * 0.5) * 1.2;
+
+  // cola ondulando hacia atrás (izquierda)
+  ctx.strokeStyle = PALETTE.tail;
+  ctx.lineWidth = 3.2;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(-21, 5);
+  ctx.bezierCurveTo(-30, 8 + sway * 0.5, -36, -2 + sway, -43, 2 + sway);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(-43, 2 + sway, 2.3, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.tail;
+  ctx.fill();
+
+  // patitas del fondo (más oscuras)
+  ctx.fillStyle = PALETTE.furDeep;
+  ctx.beginPath();
+  ctx.ellipse(-12 - stride * 0.7, 17, 5.5, 3.6, -0.15, 0, Math.PI * 2);
+  ctx.ellipse(9 + stride * 0.7, 17, 4.8, 3.2, 0.15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // oreja trasera (atrás/arriba, más oscura)
+  ctx.save();
+  ctx.translate(4, -20 + earWig * 0.6);
+  ctx.rotate(-0.2);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 8.5, 10.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.furDeep;
+  ctx.fill();
   ctx.restore();
+
+  // cuerpo + cabeza en perfil hacia la derecha
+  ctx.beginPath();
+  ctx.moveTo(-22, 6);
+  ctx.bezierCurveTo(-24, -10, -8, -19, 6, -17);
+  ctx.bezierCurveTo(17, -16, 26, -7, 27, -1); // hocico
+  ctx.bezierCurveTo(26, 6, 17, 13, 6, 15);
+  ctx.bezierCurveTo(-8, 17, -20, 15, -22, 6);
+  ctx.closePath();
+  ctx.fillStyle = PALETTE.fur;
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2.6;
+  ctx.fill();
+  ctx.stroke();
+
+  // pancita crema en la parte inferior del perfil
+  ctx.save();
+  ctx.clip();
+  ctx.beginPath();
+  ctx.ellipse(0, 14, 21, 9, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.belly;
+  ctx.fill();
+  ctx.restore();
+  // repasar contorno tras clip
+  ctx.beginPath();
+  ctx.moveTo(-22, 6);
+  ctx.bezierCurveTo(-24, -10, -8, -19, 6, -17);
+  ctx.bezierCurveTo(17, -16, 26, -7, 27, -1);
+  ctx.bezierCurveTo(26, 6, 17, 13, 6, 15);
+  ctx.bezierCurveTo(-8, 17, -20, 15, -22, 6);
+  ctx.closePath();
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2.6;
+  ctx.stroke();
+
+  // patitas delanteras visibles (ciclo opuesto al fondo)
+  ctx.fillStyle = PALETTE.pink;
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.ellipse(-9 + stride, 17, 5.8, 3.8, 0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(11 - stride, 16.5, 5, 3.4, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // oreja delantera (interior rosado mirando hacia el frente-derecha)
+  ctx.save();
+  ctx.translate(1, -17 + earWig);
+  ctx.rotate(-0.18);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 9.5, 11.2, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.fur;
+  ctx.strokeStyle = PALETTE.furDeep;
+  ctx.lineWidth = 2.3;
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(1.4, 0.6, 5.2, 6.8, 0, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.pink;
+  ctx.fill();
+  ctx.restore();
+
+  // mejilla rosada
+  ctx.fillStyle = PALETTE.pink;
+  ctx.globalAlpha = 0.45;
+  ctx.beginPath();
+  ctx.ellipse(13, -1, 3.6, 2.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // ojo de perfil
+  if (dead) {
+    ctx.strokeStyle = "#2e2a26";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(12, -9.5);
+    ctx.lineTo(17, -4.5);
+    ctx.moveTo(17, -9.5);
+    ctx.lineTo(12, -4.5);
+    ctx.stroke();
+  } else if (blinking) {
+    ctx.strokeStyle = "#2e2a26";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(14.5, -6.5, 3, Math.PI * 1.1, Math.PI * 1.9);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = "#2e2a26";
+    ctx.beginPath();
+    ctx.ellipse(14.5, -7, 2.8, 3.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fffdf4";
+    ctx.beginPath();
+    ctx.arc(15.4, -8, 1.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // nariz en la punta del hocico
+  ctx.fillStyle = "#e87c8a";
+  ctx.beginPath();
+  ctx.ellipse(26.5, -1.5, 3.2, 2.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // bigotes
+  ctx.strokeStyle = "rgba(76,69,61,0.55)";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(23, -1);
+  ctx.quadraticCurveTo(30, -5, 35, -4);
+  ctx.moveTo(23, 1);
+  ctx.quadraticCurveTo(30, 1, 35, 4);
+  ctx.stroke();
 }
 
 /* ---------------- destello de estrella (partículas) ---------------- */

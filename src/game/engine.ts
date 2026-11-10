@@ -2,13 +2,11 @@
  * RATÓN — engine.ts
  * Motor del juego: endless runner vertical de 3 carriles.
  * - Desliza / flechas para moverte entre carriles.
- * - Trampas = muerte. Queso = +100 × combo. Near-miss = +AURA (multiplica distancia).
+ * - Trampas = -1 vida. Queso = +100 × combo. Near-miss = +AURA (multiplica distancia).
  */
 
 import {
   PALETTE,
-  drawCheese,
-  drawCloud,
   drawMouse,
   drawPetal,
   drawSpark,
@@ -21,7 +19,7 @@ import {
 } from "./draw";
 import type { SoundEngine } from "./audio";
 import { buzz } from "./audio";
-import { requestGyroPermission } from "./gyro";
+import { SpriteCache, compact, drawCheeseFast, drawTrapFast } from "./sprites";
 
 export interface HudState {
   distance: number;
@@ -31,8 +29,6 @@ export interface HudState {
   speed01: number;
   lives: number;
   strawberry: boolean;
-  /** Inclinación normalizada -1..1 (indicador del modo giroscopio) */
-  tilt: number;
 }
 
 export interface RunResult {
@@ -96,18 +92,17 @@ interface Decor {
   s: number;
   rot: number;
 }
-interface Cloud {
-  x: number;
-  y: number;
-  s: number;
-  v: number;
-}
+/** Resolución interna según rendimiento (alta → media → baja) */
+const QUALITY_DPR = [2, 1.5, 1];
 
 const START_SPEED = 260;
-const MAX_SPEED = 680;
+const MAX_SPEED = 880;
 const RAMP_T = 110; // segundos hasta velocidad máxima (rampa larga y gradual)
 const PX_PER_M = 52;
 const LANES = 3;
+const BANDAID_CHANCE = 0.5;
+const BANDAID_COOLDOWN = 18; // segundos de juego entre apariciones
+const STRAWBERRY_CHANCE = 0.3;
 
 /* --- topes SOLO de feedback visual (pétalos, números, títulos) ---
  * Queso y trampas son el corazón del juego: no se recortan.
@@ -146,16 +141,15 @@ export class RatonGame {
   // --- fresa: multiplicador de queso por tiempo ---
   strawberryUntil = 0;
   nextPowerupAt = 900;
+  private nextBandaidAt = BANDAID_COOLDOWN;
   // --- giroscopio ---
   tiltActive = false;
-  tiltStatus: "off" | "on" | "denied" | "unsupported" = "off";
-  /** Inclinación -1..1 para el indicador del HUD */
-  tiltValue = 0;
-  private tiltArmed = 0; // -1 ya giró a la izq · 1 ya giró a la der · 0 libre
-  private tiltAbsSeen = false; // el navegador emite deviceorientationabsolute
-  private tiltZero = 0; // centro calibrado (cada celular llega con offset)
-  private onTiltRaw?: (e: DeviceOrientationEvent) => void;
-  private onTiltAbs?: (e: DeviceOrientationEvent) => void;
+  private tiltHandler?: (e: DeviceOrientationEvent) => void;
+  private tiltBase: number | null = null; // inclinación "centro" del jugador
+  private tiltSmooth = 0; // lectura filtrada (anti-temblor)
+  private tiltArmed = true; // hay que volver al centro para mover otra vez
+  private tiltCalib: number[] = []; // muestras iniciales para calibrar
+  private tiltLastMoveAt = 0;
   vibrateEnabled = true;
 
   private elapsed = 0;
@@ -183,7 +177,16 @@ export class RatonGame {
   private parts: Particle[] = [];
   private floats: FloatText[] = [];
   private decor: Decor[] = [];
-  private clouds: Cloud[] = [];
+
+  // --- rendimiento ---
+  private sprites = new SpriteCache();
+  private dpr = 1;
+  private quality = 0;
+  private dtAvg = 1 / 60;
+  private slowT = 0;
+  private wallT = 0;
+  private needsRender = true;
+  private settleT = 0.6;
 
   private nextRowAt = 620;
   private nextDecorAt = 100;
@@ -209,7 +212,8 @@ export class RatonGame {
     this.canvas = canvas;
     this.cb = cb;
     this.sound = cb.sound;
-    const ctx = canvas.getContext("2d");
+    // la pista cubre todo el lienzo: sin canal alfa el navegador compone más rápido
+    const ctx = canvas.getContext("2d", { alpha: false });
     if (!ctx) throw new Error("Canvas 2D no disponible");
     this.ctx = ctx;
 
@@ -220,16 +224,6 @@ export class RatonGame {
     this.spawnEnt("cheese", 1, this.H * 0.22);
     this.spawnEnt("trap", 0, this.H * 0.04);
     this.pathLanes = [1, 2];
-
-    // nubes iniciales (solo en la banda del cielo)
-    for (let i = 0; i < 5; i++) {
-      this.clouds.push({
-        x: Math.random(),
-        y: rand(0.02, 0.26),
-        s: rand(0.5, 1.1),
-        v: rand(6, 16),
-      });
-    }
 
     window.addEventListener("keydown", this.keyHandler);
     document.addEventListener("visibilitychange", this.visHandler);
@@ -262,7 +256,11 @@ export class RatonGame {
     const bounds = parent?.getBoundingClientRect();
     const cssW = Math.max(1, Math.round(bounds?.width || window.innerWidth || 360));
     const cssH = Math.max(1, Math.round(bounds?.height || window.innerHeight || 640));
-    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    // 2× ya es nítido en cualquier móvil; más píxeles solo gastan batería
+    const dpr = Math.min(window.devicePixelRatio || 1, QUALITY_DPR[this.quality]);
+    this.dpr = dpr;
+    this.sprites.clear();
+    this.needsRender = true;
     this.W = cssW;
     this.H = cssH;
     this.canvas.width = Math.round(cssW * dpr);
@@ -301,94 +299,116 @@ export class RatonGame {
   setPaused(p: boolean) {
     if (this.paused === p) return;
     this.paused = p;
+    this.needsRender = true;
     this.cb.onPauseChange?.(p);
   }
 
-  /**
-   * Giroscopio para Safari (iOS 13+) y Chrome/Android.
-   * Claves: requestPermission() DEBE llamarse dentro de un gesto del usuario
-   * (por eso se dispara desde un tap/botón, no al montar), y algunos Chrome
-   * solo emiten `deviceorientationabsolute`, así escuchamos ambos.
-   * Devuelve "needs" si faltó el gesto (no es un rechazo del usuario).
-   */
-  async enableTilt(): Promise<"on" | "denied" | "unsupported" | "needs"> {
-    if (this.tiltActive) return "on";
-    const perm = await requestGyroPermission();
-    if (perm === "unsupported") {
-      this.tiltStatus = "unsupported";
-      return "unsupported";
+  /** ¿Este navegador exige permiso con toque? (Safari iOS 13+) */
+  static tiltNeedsPermission(): boolean {
+    try {
+      const DOE = window.DeviceOrientationEvent as unknown as
+        | { requestPermission?: unknown }
+        | undefined;
+      return !!DOE && typeof DOE.requestPermission === "function";
+    } catch {
+      return false;
     }
-    if (perm === "denied") {
-      this.tiltStatus = "denied";
-      return "denied";
-    }
-    if (perm === "needs-gesture") {
-      // Safari sin gesto válido: queda pendiente, NO denegado
-      return "needs";
-    }
-    this.tiltActive = true;
-    this.tiltStatus = "on";
-    this.tiltArmed = 0;
-    this.onTiltRaw = (e) => this.handleTilt(e, false);
-    this.onTiltAbs = (e) => this.handleTilt(e, true);
-    window.addEventListener("deviceorientation", this.onTiltRaw);
-    window.addEventListener(
-      "deviceorientationabsolute",
-      this.onTiltAbs as EventListener
-    );
-    return "on";
   }
 
-  /** Umbral + histéresis: UN carril por gesto de inclinación, nunca ráfagas */
-  private handleTilt(e: DeviceOrientationEvent, absolute: boolean) {
-    if (absolute) this.tiltAbsSeen = true;
-    else if (this.tiltAbsSeen) return; // no doblar el mismo gesto
-
-    const gamma = typeof e.gamma === "number" ? e.gamma : 0;
-    const beta = typeof e.beta === "number" ? e.beta : 0;
-
-    // el juego es vertical; si giran el celular corregimos los ejes
-    const rawAngle =
-      (typeof screen !== "undefined" && screen.orientation?.angle) ||
-      (window as unknown as { orientation?: number }).orientation ||
-      0;
-    const angle = ((Math.round(rawAngle / 90) * 90) % 360 + 360) % 360;
-    let v = gamma;
-    if (angle === 90) v = -beta;
-    else if (angle === 180) v = -gamma;
-    else if (angle === 270) v = beta;
-
-    // calibrado suave del centro (el "cero" de cada celular varía unos grados)
-    this.tiltZero += (v - this.tiltZero) * 0.04;
-    const dev = v - this.tiltZero;
-    this.tiltValue = clamp(dev / 22, -1, 1);
-
-    const TRIGGER = 12; // grados para cambiar de carril
-    const RELEASE = 4; // grados para volver a armar
-    if (Math.abs(dev) < RELEASE) this.tiltArmed = 0;
-    if (this.state !== "playing" || this.paused) return;
-    if (dev > TRIGGER && this.tiltArmed !== 1) {
-      this.tiltArmed = 1;
-      this.move(1, true);
-    } else if (dev < -TRIGGER && this.tiltArmed !== -1) {
-      this.tiltArmed = -1;
-      this.move(-1, true);
+  /** Pide el permiso. DEBE llamarse dentro de un toque/click (Safari). */
+  static async requestTiltPermission(): Promise<boolean> {
+    try {
+      const DOE = window.DeviceOrientationEvent as unknown as
+        | { requestPermission?: () => Promise<"granted" | "denied"> }
+        | undefined;
+      if (DOE && typeof DOE.requestPermission === "function") {
+        return (await DOE.requestPermission()) === "granted";
+      }
+      return true; // Chrome/Android: no hace falta permiso
+    } catch {
+      return false;
     }
+  }
+
+  /** Inclinación lateral compensada según la rotación de la pantalla. */
+  private readTilt(e: DeviceOrientationEvent): number | null {
+    const gamma = typeof e.gamma === "number" ? e.gamma : null;
+    const beta = typeof e.beta === "number" ? e.beta : null;
+    if (gamma === null && beta === null) return null;
+    let angle = 0;
+    try {
+      angle = window.screen?.orientation?.angle ?? 0;
+    } catch {
+      angle = 0;
+    }
+    // El juego se juega en vertical: manda gamma. Si el cel está girado, beta.
+    if (angle === 90) return beta ?? gamma ?? 0;
+    if (angle === 270 || angle === -90) return -(beta ?? 0);
+    if (angle === 180) return -(gamma ?? 0);
+    return gamma ?? 0;
+  }
+
+  /**
+   * Escucha el giroscopio (sin pedir permiso: eso va en el toque).
+   * - Calibra el "centro" con las primeras lecturas: sujetas el cel como
+   *   quieras, ese es tu cero. Sin drift aunque lo agarres inclinado.
+   * - Filtro paso-bajo: nada de temblores.
+   * - UN carril por inclinación: hay que volver cerca del centro para
+   *   poder mover otra vez (igual que un gesto de deslizar).
+   */
+  startTilt() {
+    if (this.tiltHandler || typeof window.addEventListener !== "function") return;
+    this.tiltBase = null;
+    this.tiltCalib = [];
+    this.tiltSmooth = 0;
+    this.tiltArmed = true;
+    this.tiltLastMoveAt = 0;
+    const handler = (e: DeviceOrientationEvent) => {
+      if (this.state !== "playing" || this.paused) return;
+      const raw = this.readTilt(e);
+      if (raw === null) return;
+      // calibración: promedio de las primeras 8 lecturas = tu centro
+      if (this.tiltBase === null) {
+        this.tiltCalib.push(raw);
+        if (this.tiltCalib.length >= 8) {
+          this.tiltBase =
+            this.tiltCalib.reduce((a, b) => a + b, 0) / this.tiltCalib.length;
+          this.tiltSmooth = this.tiltBase;
+          this.tiltCalib = [];
+        }
+        return;
+      }
+      this.tiltSmooth += (raw - this.tiltSmooth) * 0.35;
+      const rel = this.tiltSmooth - this.tiltBase;
+      const now = performance.now();
+      if (Math.abs(rel) < 7) {
+        this.tiltArmed = true; // volvió al centro: puede mover otra vez
+        return;
+      }
+      if (!this.tiltArmed || now - this.tiltLastMoveAt < 220) return;
+      if (rel <= -13) {
+        this.move(-1, true);
+        this.tiltArmed = false;
+        this.tiltLastMoveAt = now;
+      } else if (rel >= 13) {
+        this.move(1, true);
+        this.tiltArmed = false;
+        this.tiltLastMoveAt = now;
+      }
+    };
+    this.tiltHandler = handler;
+    window.addEventListener("deviceorientation", handler);
+    this.tiltActive = true;
   }
 
   stopTilt() {
     this.tiltActive = false;
-    this.tiltValue = 0;
-    this.tiltArmed = 0;
-    this.tiltAbsSeen = false;
-    if (this.onTiltRaw) window.removeEventListener("deviceorientation", this.onTiltRaw);
-    if (this.onTiltAbs)
-      window.removeEventListener(
-        "deviceorientationabsolute",
-        this.onTiltAbs as EventListener
-      );
-    this.onTiltRaw = undefined;
-    this.onTiltAbs = undefined;
+    this.tiltBase = null;
+    this.tiltCalib = [];
+    if (this.tiltHandler) {
+      window.removeEventListener("deviceorientation", this.tiltHandler);
+      this.tiltHandler = undefined;
+    }
   }
 
   /** Vibración respetando el ajuste del jugador */
@@ -415,13 +435,45 @@ export class RatonGame {
         if (!this.paused) {
           this.update(rawDt);
         }
-        this.render(t);
+        // En pausa o tras el final la escena queda tapada: se dibuja un
+        // momento más para que asienten los efectos y luego se deja de
+        // redibujar (batería, y el desenfoque del panel no se recalcula).
+        const idle = this.paused || this.state === "dead";
+        if (idle) {
+          this.settleT = Math.max(0, this.settleT - rawDt);
+        } else {
+          this.settleT = 0.6;
+          this.tuneQuality(rawDt);
+        }
+        if (!idle || this.settleT > 0 || this.needsRender) {
+          this.needsRender = false;
+          this.render(t);
+        }
         this.raf = requestAnimationFrame(loop);
       } catch {
         this.fail();
       }
     };
     this.raf = requestAnimationFrame(loop);
+  }
+
+  /** Si el móvil no sostiene ~40 fps, baja la resolución interna (sin volver a subir). */
+  private tuneQuality(rawDt: number) {
+    this.wallT += rawDt;
+    this.dtAvg += (rawDt - this.dtAvg) * 0.06;
+    if (this.wallT < 2.5 || this.quality >= QUALITY_DPR.length - 1) return;
+    if (this.dtAvg > 0.027) {
+      this.slowT += rawDt;
+      if (this.slowT > 1.5) {
+        this.quality++;
+        this.slowT = 0;
+        this.wallT = 0;
+        this.dtAvg = 1 / 60;
+        this.resize();
+      }
+    } else {
+      this.slowT = Math.max(0, this.slowT - rawDt);
+    }
   }
 
   private fail() {
@@ -582,19 +634,36 @@ export class RatonGame {
 
     // --- power-up raro, en un carril que SÍ puedes alcanzar ---
     if (this.scroll >= this.nextPowerupAt) {
-      const options = this.widenLanes(this.pathLanes);
-      const lane = options[Math.floor(rand(0, options.length))] ?? 1;
-      const wantBandaid = this.lives < this.maxLives ? Math.random() < 0.7 : true;
-      this.spawnEnt(wantBandaid ? "bandaid" : "strawberry", lane, -70);
-      this.pathLanes = options;
+      const roll = Math.random();
+      let powerup: "bandaid" | "strawberry" | null = null;
+      if (
+        roll < BANDAID_CHANCE &&
+        this.lives < this.maxLives &&
+        this.elapsed >= this.nextBandaidAt
+      ) {
+        powerup = "bandaid";
+        this.nextBandaidAt = this.elapsed + BANDAID_COOLDOWN;
+      } else if (
+        roll >= 1 - STRAWBERRY_CHANCE &&
+        this.strawberryUntil <= this.elapsed
+      ) {
+        powerup = "strawberry";
+      }
       this.nextPowerupAt = this.scroll + rand(3800, 7000);
-      return { h: 0, mul: 0.85 };
+      // Las curitas descartadas dan paso a un patron normal, no a mas fresas.
+      if (powerup) {
+        const options = this.widenLanes(this.pathLanes);
+        const lane = pick(options) ?? 1;
+        this.spawnEnt(powerup, lane, -70);
+        this.pathLanes = options;
+        return { h: 0, mul: 0.85 };
+      }
     }
 
     const patterns: { w: number; run: () => { h: number; mul: number } }[] = [
       {
         // TRAIL de queso en un carril (el snack del juego)
-        w: 2.8 - t01 * 0.6,
+        w: 2.8 - t01 * 1.4,
         run: () => {
           const options = this.widenLanes(this.pathLanes);
           const lane = options[Math.floor(rand(0, options.length))] ?? 1;
@@ -606,7 +675,7 @@ export class RatonGame {
       },
       {
         // queso en LOS TRES carriles (descanso gratificante)
-        w: 1.4 - t01 * 0.4,
+        w: 1.4 - t01 * 0.7,
         run: () => {
           for (let l = 0; l < 3; l++) this.spawnEnt("cheese", l, -70);
           this.pathLanes = [0, 1, 2];
@@ -615,7 +684,7 @@ export class RatonGame {
       },
       {
         // zig-zag de queso (te mueve entre carriles, enseña el control)
-        w: 1.5,
+        w: 1.5 - t01 * 0.3,
         run: () => {
           let lane = this.pathLanes[Math.floor(rand(0, this.pathLanes.length))] ?? 1;
           for (let i = 0; i < 5; i++) {
@@ -629,7 +698,7 @@ export class RatonGame {
       },
       {
         // TRAMPA simple + trail de queso en OTRO carril (el patrón estrella)
-        w: 2.4,
+        w: 2.4 + t01 * 0.2,
         run: () => {
           const t = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
           const free = pick([0, 1, 2].filter((l) => l !== t));
@@ -641,7 +710,7 @@ export class RatonGame {
       },
       {
         // DOBLE trampa + trail de queso en el hueco (siempre 1 carril libre)
-        w: 0.5 + t01 * 2.4,
+        w: 0.5 + t01 * 3.2,
         run: () => {
           const shuffled = [0, 1, 2].sort(() => Math.random() - 0.5);
           const traps = this.fixTrapLevel([shuffled[0], shuffled[1]]);
@@ -658,7 +727,7 @@ export class RatonGame {
       },
       {
         // cebo: queso al lado de la trampa (riesgo/recompensa, 1 carril de diferencia)
-        w: 1.4 + t01 * 0.6,
+        w: 1.4 + t01 * 0.9,
         run: () => {
           const t = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
           const side = t === 1 ? pick([0, 2]) : 1;
@@ -669,15 +738,17 @@ export class RatonGame {
       },
       {
         // trampas escalonadas (te obliga a cambiar dos veces, con queso en el medio)
-        w: t01 * 1.6,
+        w: t01 * 2.1,
         run: () => {
+          // Conserva tiempo para esquivar incluso con el nuevo techo de velocidad.
+          const trapGap = Math.max(140 + 2 * STEP, this.speed * 0.6 + 80);
           const a = this.fixTrapLevel([Math.floor(rand(0, 3))])[0];
           this.spawnEnt("trap", a, -70);
           const mid = pick([0, 1, 2].filter((l) => l !== a));
           this.spawnCheeseTrail(mid, 2, -70 - 140, STEP);
           const b = this.fixTrapLevel([clamp(a + pick([-1, 1]), 0, 2)])[0];
-          this.spawnEnt("trap", b, -70 - 140 - 2 * STEP);
-          return { h: 140 + 2 * STEP, mul: 1.0 };
+          this.spawnEnt("trap", b, -70 - trapGap);
+          return { h: trapGap, mul: 1.0 };
         },
       },
     ];
@@ -780,7 +851,7 @@ export class RatonGame {
       // En píxeles crece con la velocidad, así nunca se amontonan, pero
       // la pista se siente llena (queso + trampa siempre a la vista).
       const baseGap = this.speed * (0.5 + this.speedFrac() * 0.28);
-      const gap = clamp(baseGap, 160, 620) * mul * rand(0.94, 1.08);
+      const gap = Math.max(baseGap, 160) * mul * rand(0.94, 1.08);
       this.nextRowAt = this.scroll + h + gap;
     }
 
@@ -813,20 +884,9 @@ export class RatonGame {
       this.nextToriiAt = this.scroll + rand(1100, 2100);
     }
     for (const d of this.decor) d.y += this.speed * dt;
-    this.decor = this.decor.filter((d) => d.y < this.H + 80);
+    compact(this.decor, (d) => d.y < this.H + 80);
     if (this.decor.length > MAX_DECOR)
       this.decor.splice(0, this.decor.length - MAX_DECOR);
-
-    // nubes (deriva de viento sobre el cielo, con parallax de velocidad)
-    for (const c of this.clouds) {
-      c.x += ((this.speed * 0.045 + c.v) * dt) / this.W;
-      if (c.x > 1.2) {
-        c.x = -0.3;
-        c.y = rand(0.02, 0.26);
-        c.s = rand(0.5, 1.15);
-        c.v = rand(6, 16);
-      }
-    }
 
     // jugador: movimiento suave entre carriles
     const targetX = this.laneX(this.player.lane);
@@ -878,9 +938,7 @@ export class RatonGame {
         }
       }
     }
-    this.ents = this.ents.filter(
-      (e) => e.y < this.H + 140 && !e.taken
-    );
+    compact(this.ents, (e) => e.y < this.H + 140 && !e.taken);
 
     // aura alta = partículas de fuego dorado
     if (this.state === "playing" && this.aura >= 3 && Math.random() < 0.5) {
@@ -908,18 +966,20 @@ export class RatonGame {
       p.rot += p.vr * rawDt;
       if (p.kind === "petal") p.x += Math.sin(p.life * 5 + p.rot) * 0.6;
     }
-    this.parts = this.parts.filter((p) => p.life > 0);
+    compact(this.parts, (p) => p.life > 0);
 
     // textos flotantes
     for (const f of this.floats) {
       f.life -= rawDt;
       f.y += f.vy * rawDt;
     }
-    this.floats = this.floats.filter((f) => f.life > 0);
+    compact(this.floats, (f) => f.life > 0);
 
     // pétalos ambientales: nacen poco a poco, viven lo justo para cruzar la
     // pantalla y dejan siempre un margen de partículas reservado a los efectos.
+    // En calidad baja se omiten (son decoración pura).
     if (
+      this.quality < 2 &&
       this.parts.length < MAX_PARTICLES - PETAL_RESERVE &&
       Math.random() < rawDt * 1.1
     ) {
@@ -958,7 +1018,6 @@ export class RatonGame {
       speed01: clamp((this.speed - START_SPEED) / (MAX_SPEED - START_SPEED), 0, 1),
       lives: this.lives,
       strawberry: this.strawberryUntil > this.elapsed,
-      tilt: this.tiltActive ? this.tiltValue : 0,
     });
   }
 
@@ -1191,27 +1250,30 @@ export class RatonGame {
   private render(t: number) {
     const ctx = this.ctx;
     const { W, H } = this;
-    ctx.clearRect(0, 0, W, H);
+    // base opaca: si la pantalla tiembla, los bordes muestran pasto, no basura
+    ctx.fillStyle = PALETTE.grass;
+    ctx.fillRect(0, 0, W, H);
 
     ctx.save();
     if (this.shake > 0) {
       ctx.translate(rand(-this.shake, this.shake), rand(-this.shake, this.shake));
     }
 
-    this.drawSky(ctx, t);
+    // (El cielo con sol y montañas quedaba 100 % tapado por la pista y el
+    // pasto: se dibujaba a pantalla completa cada frame para nada. Eliminado.)
     this.drawRoad(ctx);
     this.drawDecor(ctx);
 
-    // entidades ordenadas por Y (las de abajo delante)
-    const sorted = [...this.ents].sort((a, b) => a.y - b.y);
+    // entidades ordenadas por Y (las de abajo delante), en su sitio: sin copias
+    this.ents.sort((a, b) => a.y - b.y);
     const py = this.playerY();
-    for (const e of sorted) {
+    for (const e of this.ents) {
       if (e.taken) continue;
       const ex = this.laneX(e.lane) + e.xOff;
       ctx.save();
       ctx.translate(ex, e.y);
       if (e.type === "cheese") {
-        drawCheese(ctx, t + e.seed * 10, 0.86);
+        drawCheeseFast(ctx, this.sprites, t + e.seed * 10, 0.86, this.dpr);
       } else if (e.type === "strawberry") {
         drawStrawberry(ctx, t + e.seed * 10, 0.8);
       } else if (e.type === "bandaid") {
@@ -1221,7 +1283,9 @@ export class RatonGame {
           this.state === "playing" && e.lane === this.player.lane
             ? clamp(1 - Math.abs(e.y - py - 90) / 260, 0, 1)
             : 0;
-        drawTrap(ctx, 0.95, e.snapT, near * 2);
+        // abierta = sprite cacheado; cerrándose = vectorial animado
+        if (e.snapT > 0) drawTrap(ctx, 0.95, e.snapT, near * 2);
+        else drawTrapFast(ctx, this.sprites, 0.95, near * 2, this.dpr);
       }
       ctx.restore();
     }
@@ -1245,7 +1309,7 @@ export class RatonGame {
 
     // líneas de velocidad
     const s01 = clamp((this.speed - START_SPEED) / (MAX_SPEED - START_SPEED), 0, 1);
-    if (s01 > 0.5 && this.state === "playing") {
+    if (s01 > 0.5 && this.state === "playing" && this.quality < 2) {
       ctx.strokeStyle = `rgba(76,69,61,${(s01 - 0.5) * 0.35})`;
       ctx.lineWidth = 2;
       ctx.lineCap = "round";
@@ -1272,64 +1336,6 @@ export class RatonGame {
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
     }
-  }
-
-  private drawSky(ctx: CanvasRenderingContext2D, t: number) {
-    const { W, H } = this;
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, PALETTE.sky1);
-    g.addColorStop(1, PALETTE.sky2);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-
-    // sol bermellón
-    const sunX = W * 0.76;
-    const sunY = H * 0.16;
-    ctx.fillStyle = PALETTE.sunGlow;
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 84, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = PALETTE.sun;
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 52, 0, Math.PI * 2);
-    ctx.fill();
-    // anillo de tinta
-    ctx.strokeStyle = "rgba(76,69,61,0.22)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, 60, 0.2, Math.PI * 1.4);
-    ctx.stroke();
-
-    // montañas lejanas (dos bandas)
-    const ridge = (yBase: number, amp: number, phase: number, color: string) => {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(-4, H);
-      for (let x = -4; x <= W + 4; x += 10) {
-        const u = x / W;
-        const y =
-          yBase -
-          Math.abs(Math.sin(u * Math.PI * 2.2 + phase)) * amp -
-          Math.sin(u * Math.PI * 6.7 + phase * 2) * (amp * 0.18);
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(W + 4, H);
-      ctx.closePath();
-      ctx.fill();
-    };
-    // horizonte fijo: la cámara corre hacia adelante, no de lado
-    ridge(H * 0.36, 56, 0.6, "rgba(213,199,164,0.55)");
-    ridge(H * 0.45, 42, 2.1, "rgba(196,180,142,0.5)");
-
-    // nubes
-    for (const c of this.clouds) {
-      ctx.save();
-      ctx.translate(c.x * W, c.y * H);
-      ctx.globalAlpha = 0.95;
-      drawCloud(ctx, c.s * (W / 420));
-      ctx.restore();
-    }
-    void t;
   }
 
   private drawRoad(ctx: CanvasRenderingContext2D) {

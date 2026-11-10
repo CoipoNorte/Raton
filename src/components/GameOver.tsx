@@ -1,14 +1,24 @@
 import { motion } from "framer-motion";
-import { RotateCcw, Home, Footprints, Zap, Crown } from "lucide-react";
+import { RotateCcw, Home, Footprints, Zap, Crown, Shield, Users } from "lucide-react";
 import CheeseIcon from "./CheeseIcon";
 
-export interface OverData {
-  distance: number;
-  cheese: number;
-  auraMax: number;
-  best: number;
-  isRecord: boolean;
-}
+export type OverData =
+  | {
+      mode: "runner";
+      distance: number;
+      cheese: number;
+      auraMax: number;
+      best: number;
+      isRecord: boolean;
+    }
+  | {
+      mode: "snake";
+      maxChain: number;
+      cheese: number;
+      shieldsMax: number;
+      best: number;
+      isRecord: boolean;
+    };
 
 interface Props {
   data: OverData;
@@ -17,6 +27,8 @@ interface Props {
 }
 
 export default function GameOver({ data, onRetry, onMenu }: Props) {
+  const isSnake = data.mode === "snake";
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -47,40 +59,75 @@ export default function GameOver({ data, onRetry, onMenu }: Props) {
         <div className="text-center">
           <div className="font-brush text-4xl text-[#c23e1c]">捕まった!</div>
           <div className="mt-1 text-[11px] font-black tracking-[0.45em] text-[#2e2a26]/45">
-            ATRAPADO
+            {isSnake ? "FIN DE FILA" : "ATRAPADO"}
           </div>
         </div>
 
-        {/* distancia principal */}
+        {/* marcador principal */}
         <div className="mt-4 text-center">
-          <div className="tabular text-6xl font-black leading-none tracking-tight text-[#2e2a26]">
-            {data.distance}
-            <span className="ml-1 text-xl font-bold text-[#2e2a26]/45">m</span>
-          </div>
-          <div className="mt-1 flex items-center justify-center gap-1.5 text-xs font-bold text-[#2e2a26]/55">
-            <Crown className="h-3.5 w-3.5 text-[#c77d12]" />
-            mejor: <span className="tabular">{data.best}m</span>
-          </div>
+          {isSnake ? (
+            <>
+              <div className="tabular text-6xl font-black leading-none tracking-tight text-[#2e2a26]">
+                {data.maxChain}
+                <span className="ml-1.5 text-2xl font-bold text-[#e4572e]">🐭</span>
+              </div>
+              <div className="mt-1 flex items-center justify-center gap-1.5 text-xs font-bold text-[#2e2a26]/55">
+                <Crown className="h-3.5 w-3.5 text-[#c77d12]" />
+                mejor fila: <span className="tabular">{data.best} 🐭</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="tabular text-6xl font-black leading-none tracking-tight text-[#2e2a26]">
+                {data.distance}
+                <span className="ml-1 text-xl font-bold text-[#2e2a26]/45">m</span>
+              </div>
+              <div className="mt-1 flex items-center justify-center gap-1.5 text-xs font-bold text-[#2e2a26]/55">
+                <Crown className="h-3.5 w-3.5 text-[#c77d12]" />
+                mejor: <span className="tabular">{data.best}m</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* stats */}
-        <div className="mt-5 grid grid-cols-3 gap-2">
-          <Stat
-            icon={<Footprints className="h-4 w-4" />}
-            value={`${data.distance}m`}
-            label="distancia"
-          />
-          <Stat
-            icon={<CheeseIcon className="h-4 w-4" />}
-            value={`${data.cheese}`}
-            label="quesos"
-          />
-          <Stat
-            icon={<Zap className="h-4 w-4" />}
-            value={`${data.auraMax}`}
-            label="aura máx"
-          />
-        </div>
+        {isSnake ? (
+          <div className="mt-5 grid grid-cols-3 gap-2">
+            <Stat
+              icon={<Users className="h-4 w-4" />}
+              value={`${data.maxChain}`}
+              label="fila máx"
+            />
+            <Stat
+              icon={<CheeseIcon className="h-4 w-4" />}
+              value={`${data.cheese}`}
+              label="quesos"
+            />
+            <Stat
+              icon={<Shield className="h-4 w-4" />}
+              value={`${data.shieldsMax}/3`}
+              label="escudos"
+            />
+          </div>
+        ) : (
+          <div className="mt-5 grid grid-cols-3 gap-2">
+            <Stat
+              icon={<Footprints className="h-4 w-4" />}
+              value={`${data.distance}m`}
+              label="distancia"
+            />
+            <Stat
+              icon={<CheeseIcon className="h-4 w-4" />}
+              value={`${data.cheese}`}
+              label="quesos"
+            />
+            <Stat
+              icon={<Zap className="h-4 w-4" />}
+              value={`${data.auraMax}`}
+              label="aura máx"
+            />
+          </div>
+        )}
 
         {/* acciones */}
         <div className="mt-6 flex flex-col gap-2.5">

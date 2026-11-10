@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   MoveHorizontal,
   Hand,
@@ -6,35 +7,58 @@ import {
   VolumeX,
   Music,
   Vibrate,
+  AlertTriangle,
   Check,
-  TriangleAlert,
 } from "lucide-react";
 import type { ControlMode, GameSettings } from "../game/settings";
-import type { TiltUIState } from "../game/gyro";
+import { peekTilt, probeTilt, type TiltState } from "../game/tilt";
 
 interface Props {
   settings: GameSettings;
   onChange: (patch: Partial<GameSettings>) => void;
-  /** Estado del permiso de giroscopio (para guiar al jugador) */
-  tiltState?: TiltUIState;
-  /** Se llama SINCRONIZADO dentro del clic: así Safari muestra el diálogo */
-  onTiltActivate?: () => void;
 }
 
 const OPTIONS: { id: ControlMode; name: string; desc: string; Icon: typeof MoveHorizontal }[] = [
-  { id: "swipe", name: "Deslizar", desc: "1 carril por gesto", Icon: MoveHorizontal },
+  { id: "swipe", name: "Deslizar", desc: "1 gesto = 1 carril", Icon: MoveHorizontal },
   { id: "zones", name: "Zonas", desc: "toca izq / der", Icon: Hand },
   { id: "tilt", name: "Giroscopio", desc: "inclina el cel", Icon: Smartphone },
 ];
 
 /** Panel de opciones compartido por menú y pausa: sonido, música, controles y vibración */
-export default function SettingsPanel({ settings, onChange, tiltState, onTiltActivate }: Props) {
-  // Al elegir Giroscopio pedimos el permiso EN ESTE MISMO CLIC:
-  // Safari solo muestra el diálogo si nace de un gesto del usuario.
-  const pickControl = (id: ControlMode) => {
-    onChange({ control: id });
-    if (id === "tilt") onTiltActivate?.();
+export default function SettingsPanel({ settings, onChange }: Props) {
+  // estado del giroscopio: se consulta al abrir el panel (sin pedir permiso)
+  const [tilt, setTilt] = useState<TiltState>("granted");
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    void peekTilt().then((s) => {
+      if (alive) {
+        setTilt(s);
+        setChecking(false);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** Elegir un control. Si es giroscopio, se comprueba (este click es el gesto). */
+  const chooseControl = async (id: ControlMode) => {
+    if (id !== "tilt") {
+      onChange({ control: id });
+      return;
+    }
+    setChecking(true);
+    const s = await probeTilt();
+    setTilt(s);
+    setChecking(false);
+    // Solo se selecciona si de verdad funciona; si no, se queda el anterior.
+    if (s === "granted") onChange({ control: "tilt" });
   };
+
+  const tiltBlocked = tilt === "denied" || tilt === "unsupported";
+
   return (
     <div className="w-full max-w-[340px] rounded-2xl border-2 border-[#2e2a26]/10 bg-[#faf4e4] p-4 shadow-[0_6px_0_rgba(0,0,0,0.25)]">
       <div className="flex items-center justify-between">
@@ -108,76 +132,67 @@ export default function SettingsPanel({ settings, onChange, tiltState, onTiltAct
         <div className="mt-2 grid grid-cols-3 gap-1.5">
           {OPTIONS.map(({ id, name, desc, Icon }) => {
             const active = settings.control === id;
+            const blocked = id === "tilt" && tiltBlocked;
             return (
               <SBtn
                 key={id}
-                onClick={() => pickControl(id)}
+                onClick={() => void chooseControl(id)}
                 label={`Control: ${name}`}
-                className={`flex flex-col items-center gap-1 rounded-xl border-2 px-1 py-2.5 ${
-                  active
-                    ? "border-[#e4572e] bg-[#e4572e]/10 text-[#c23e1c]"
-                    : "border-[#2e2a26]/10 bg-[#fffdf4] text-[#2e2a26]"
+                className={`flex flex-col items-center gap-1 rounded-xl border-2 px-0.5 py-2 ${
+                  blocked
+                    ? "border-[#2e2a26]/10 bg-[#e3d7b8]/40 text-[#2e2a26]/40"
+                    : active
+                      ? "border-[#e4572e] bg-[#e4572e]/10 text-[#c23e1c]"
+                      : "border-[#2e2a26]/10 bg-[#fffdf4] text-[#2e2a26]"
                 }`}
               >
                 <Icon className="h-5 w-5" strokeWidth={2.4} />
-                <span className="text-[11px] font-black leading-none">{name}</span>
+                <span className="text-[10px] font-black leading-none">{name}</span>
                 <span
-                  className={`text-[9px] font-bold leading-tight ${
-                    active ? "text-[#c23e1c]/70" : "text-[#2e2a26]/45"
+                  className={`text-[8px] font-bold leading-tight ${
+                    active && !blocked ? "text-[#c23e1c]/70" : "text-[#2e2a26]/45"
                   }`}
                 >
-                  {desc}
+                  {id === "tilt" && checking
+                    ? "comprobando…"
+                    : blocked
+                      ? tilt === "denied"
+                        ? "sin permiso"
+                        : "no disponible"
+                      : desc}
                 </span>
               </SBtn>
             );
           })}
         </div>
-        {settings.control === "tilt" && (
-          <div className="mt-2">
-            {tiltState === "on" ? (
-              <p className="flex items-center gap-1.5 rounded-xl border-2 border-[#2e8b53]/30 bg-[#2e8b53]/10 px-3 py-2 text-[11px] font-black text-[#2e8b53]">
-                <Check className="h-4 w-4 shrink-0" strokeWidth={3} />
-                Giroscopio activo · inclina para moverte
+
+        {/* aviso cuando el giroscopio no se puede usar */}
+        {tiltBlocked && settings.control === "tilt" && (
+          <div className="mt-2 flex items-start gap-2 rounded-xl border-2 border-[#c23e1c]/25 bg-[#c23e1c]/5 px-3 py-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#c23e1c]" />
+            <div className="flex-1">
+              <p className="text-[10px] font-bold leading-snug text-[#2e2a26]/75">
+                {tilt === "denied"
+                  ? "Permiso denegado. En Safari: Ajustes → Safari → Movimiento y acceso al sensor → ACTIVADO. Luego vuelve y toca Giroscopio."
+                  : "Este dispositivo no tiene sensor de movimiento."}
               </p>
-            ) : tiltState === "unsupported" ? (
-              <p className="flex items-start gap-1.5 rounded-xl border-2 border-[#2e2a26]/10 bg-[#fffdf4] px-3 py-2 text-[11px] font-bold leading-snug text-[#2e2a26]/60">
-                <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#c77d12]" />
-                Este navegador no expone el giroscopio. Prueba con Zonas o
-                Deslizar.
-              </p>
-            ) : tiltState === "denied" ? (
-              <div className="rounded-xl border-2 border-[#c77d12]/40 bg-[#f2a83b]/10 px-3 py-2">
-                <p className="flex items-start gap-1.5 text-[11px] font-bold leading-snug text-[#2e2a26]/70">
-                  <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[#c77d12]" />
-                  Permiso denegado. Para activarlo: Safari → «aA» → Ajustes del
-                  sitio web → Acceso a movimiento. En Chrome: candado →
-                  Permisos → Sensores de movimiento.
-                </p>
-                <button
-                  type="button"
-                  onClick={onTiltActivate}
-                  className="mt-2 w-full rounded-full bg-[#e4572e] py-2 text-xs font-black text-[#fffdf4] shadow-[0_3px_0_#a63a1a] transition-transform active:scale-95"
-                >
-                  Reintentar
-                </button>
-              </div>
-            ) : (
-              <div>
-                <button
-                  type="button"
-                  onClick={onTiltActivate}
-                  className="flex w-full items-center justify-center gap-2 rounded-full bg-[#e4572e] py-2.5 text-sm font-black text-[#fffdf4] shadow-[0_3px_0_#a63a1a] transition-transform active:scale-95"
-                >
-                  <Smartphone className="h-4 w-4" />
-                  Activar giroscopio
-                </button>
-                <p className="mt-1.5 text-center text-[10px] font-bold leading-snug text-[#2e2a26]/45">
-                  Safari te pedirá permiso de movimiento. El centro se calibra
-                  solo con tu postura.
-                </p>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={() => onChange({ control: "swipe" })}
+                className="mt-1.5 rounded-full bg-[#2e2a26] px-3 py-1 text-[10px] font-black text-[#faf4e4]"
+              >
+                Usar Deslizar
+              </button>
+            </div>
           </div>
+        )}
+
+        {/* confirmación cuando sí funciona */}
+        {settings.control === "tilt" && !tiltBlocked && !checking && (
+          <p className="mt-2 flex items-center gap-1.5 text-[10px] font-bold text-[#2e8b6b]">
+            <Check className="h-3.5 w-3.5" />
+            Giroscopio activo: inclina a los lados para cambiar de carril.
+          </p>
         )}
       </div>
 

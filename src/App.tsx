@@ -2,22 +2,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import Menu from "./components/Menu";
 import GameScreen from "./components/GameScreen";
+import SnakeScreen from "./components/SnakeScreen";
 import GameOver, { type OverData } from "./components/GameOver";
 import { SoundEngine } from "./game/audio";
-import { loadSave, applyRun, type SaveData } from "./game/db";
-import { loadSettings, saveSettings, type GameSettings } from "./game/settings";
 import {
-  gyroSupport,
-  requestGyroPermission,
-  tiltStateFromSupport,
-  type TiltUIState,
-} from "./game/gyro";
+  EMPTY_SAVE,
+  loadSave,
+  applyRun,
+  applySnakeRun,
+  type SaveData,
+} from "./game/db";
+import { loadSettings, saveSettings, type GameSettings } from "./game/settings";
 import type { RunResult } from "./game/engine";
+import type { SnakeRunResult } from "./game/snakeEngine";
 
-type Screen = "menu" | "game";
+type Screen = "menu" | "runner" | "snake";
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("menu");
+  const [lastMode, setLastMode] = useState<"runner" | "snake">("runner");
   const [runKey, setRunKey] = useState(0);
   const [save, setSave] = useState<SaveData | null>(null);
   const [result, setResult] = useState<OverData | null>(null);
@@ -26,16 +29,14 @@ export default function App() {
 
   // ------- ajustes (sonido + controles) -------
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
-  const applySettings = useCallback(
-    (patch: Partial<GameSettings>) => {
-      setSettings((prev) => {
-        const next = { ...prev, ...patch };
-        saveSettings(next);
-        return next;
-      });
-    },
-    []
-  );
+  const applySettings = useCallback((patch: Partial<GameSettings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      saveSettings(next);
+      return next;
+    });
+  }, []);
+
   // sincroniza el motor de audio con los ajustes
   useEffect(() => {
     sound.setVolume(settings.volume);
@@ -43,21 +44,6 @@ export default function App() {
     sound.setMusicVolume(settings.musicVol);
     sound.setMusicEnabled(settings.music);
   }, [sound, settings.volume, settings.muted, settings.music, settings.musicVol]);
-
-  // ------- permiso del giroscopio (se pide desde el clic, no al montar) -------
-  const [tiltState, setTiltState] = useState<TiltUIState>(() =>
-    tiltStateFromSupport(gyroSupport())
-  );
-  const activateTilt = useCallback(() => {
-    // requestGyroPermission se invoca sincronizado en este gesto:
-    // así Safari muestra el diálogo nativo de permiso.
-    void requestGyroPermission().then((r) => {
-      if (r === "granted") setTiltState("on");
-      else if (r === "denied") setTiltState("denied");
-      else if (r === "unsupported") setTiltState("unsupported");
-      // "needs-gesture": se queda en "needs" hasta un clic válido
-    });
-  }, []);
 
   // modo musical según pantalla: menú = calma · juego = tempo por velocidad
   useEffect(() => {
@@ -109,31 +95,65 @@ export default function App() {
     });
   }, []);
 
-  const startGame = useCallback(() => {
-    sound.unlock();
-    setResult(null);
-    setRunKey((k) => k + 1);
-    setScreen("game");
-  }, [sound]);
+  const startMode = useCallback(
+    (mode: "runner" | "snake") => {
+      sound.unlock();
+      setResult(null);
+      setLastMode(mode);
+      setRunKey((k) => k + 1);
+      setScreen(mode);
+    },
+    [sound]
+  );
+
+  const startRunner = useCallback(() => startMode("runner"), [startMode]);
+  const startSnake = useCallback(() => startMode("snake"), [startMode]);
+  const retryCurrent = useCallback(
+    () => startMode(lastMode),
+    [startMode, lastMode]
+  );
 
   const quitToMenu = useCallback(() => {
     setResult(null);
     setScreen("menu");
   }, []);
 
-  const handleGameOver = useCallback(
+  const handleRunnerGameOver = useCallback(
     (r: RunResult) => {
-      const base = saveRef.current ?? {
-        best: 0,
-        runs: 0,
-        cheeseTotal: 0,
-        auraBest: 0,
-      };
+      const base = saveRef.current ?? EMPTY_SAVE;
       const { next, isRecord } = applyRun(base, r);
       saveRef.current = next;
       setSave(next);
-      setResult({ ...r, distance: Math.floor(r.distance), best: next.best, isRecord });
+      setResult({
+        mode: "runner",
+        distance: Math.floor(r.distance),
+        cheese: r.cheese,
+        auraMax: r.auraMax,
+        best: next.best,
+        isRecord,
+      });
       if (isRecord && r.distance > 50) {
+        window.setTimeout(() => sound.record(), 550);
+      }
+    },
+    [sound]
+  );
+
+  const handleSnakeGameOver = useCallback(
+    (r: SnakeRunResult) => {
+      const base = saveRef.current ?? EMPTY_SAVE;
+      const { next, isRecord } = applySnakeRun(base, r);
+      saveRef.current = next;
+      setSave(next);
+      setResult({
+        mode: "snake",
+        maxChain: r.maxChain,
+        cheese: r.cheese,
+        shieldsMax: r.shieldsMax,
+        best: next.snakeBest,
+        isRecord,
+      });
+      if (isRecord && r.maxChain >= 3) {
         window.setTimeout(() => sound.record(), 550);
       }
     },
@@ -144,16 +164,19 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Enter" || e.key === " ") {
-        if (screen === "menu" || result) {
+        if (screen === "menu") {
           e.preventDefault();
-          startGame();
+          startRunner();
+        } else if (result) {
+          e.preventDefault();
+          retryCurrent();
         }
       }
-      if (e.key === "Escape" && screen === "game") quitToMenu();
+      if (e.key === "Escape" && screen !== "menu") quitToMenu();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [screen, result, startGame, quitToMenu]);
+  }, [screen, result, startRunner, retryCurrent, quitToMenu]);
 
   return (
     <div className="relative flex h-full w-full items-stretch justify-center overflow-hidden bg-[#211d19]">
@@ -171,27 +194,42 @@ export default function App() {
               save={save}
               settings={settings}
               onSettings={applySettings}
-              onPlay={startGame}
-              tiltState={tiltState}
-              onTiltActivate={activateTilt}
+              onPlay={startRunner}
+              onPlaySnake={startSnake}
             />
           )}
         </AnimatePresence>
 
-        {screen === "game" && (
+        {screen === "runner" && (
           <GameScreen
-            key={runKey}
+            key={`r-${runKey}`}
             sound={sound}
             settings={settings}
             onSettings={applySettings}
-            onGameOver={handleGameOver}
+            onGameOver={handleRunnerGameOver}
+            onQuit={quitToMenu}
+          />
+        )}
+
+        {screen === "snake" && (
+          <SnakeScreen
+            key={`s-${runKey}`}
+            sound={sound}
+            settings={settings}
+            snakeBest={save?.snakeBest ?? 0}
+            onSettings={applySettings}
+            onGameOver={handleSnakeGameOver}
             onQuit={quitToMenu}
           />
         )}
 
         <AnimatePresence>
-          {result && screen === "game" && (
-            <GameOver data={result} onRetry={startGame} onMenu={quitToMenu} />
+          {result && screen !== "menu" && (
+            <GameOver
+              data={result}
+              onRetry={retryCurrent}
+              onMenu={quitToMenu}
+            />
           )}
         </AnimatePresence>
       </div>
@@ -228,7 +266,7 @@ function SideDeco({ side }: { side: "left" | "right" }) {
       {side === "left" && (
         <div className="absolute bottom-8 right-8 text-right text-[11px] font-bold leading-relaxed text-[#faf4e4]/35">
           desliza · come · sobrevive
-          <br />v 1.1 — hecho con washi y tinta
+          <br />v 1.2 — carrera y fila
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-# [RATÓN (ラトン) — el juego del queso](https://coiponorte.github.io/Raton/)
+# RATÓN (ラトン) — el juego del queso
 
 ![RATÓN](public/og.png)
 
@@ -14,9 +14,9 @@ de sakura.
 
 | Acción | Efecto |
 | --- | --- |
-| **Deslizar ← / →**, tocar mitad izq/der (modo Zonas) o flechas del teclado | Cambiar de carril |
+| **Deslizar ← / →** (o tocar mitad izq/der, o flechas del teclado) | Cambiar de carril |
 | **Queso** | **+100 m** de distancia. Quesos seguidos = **combo** (×2, ×3…) |
-| **Trampa de ratón** | Fin de la partida. Una y se acabó la fiesta |
+| **Trampa de ratón** | Pierdes una vida; la partida termina al llegar a 0 |
 | **Rozar una trampa** (near-miss) | **+1 AURA**: multiplica la velocidad a la que ganas metros y envuelve al ratón en llamas doradas |
 | **Cada 500 m** | Celebración con pétalos y acorde de koto |
 
@@ -31,37 +31,49 @@ de sakura.
   navegador). **En segundo/tercer plano se corta de inmediato**: al ocultar la
   pestaña se suspende el contexto de audio (ni música ni efectos suenan fuera),
   y al volver se reanuda solo.
-- **Controles táctiles**, dos canales claros:
-  - **Deslizar** — SOLO arrastrar el dedo (los toques por área son de Zonas,
-    no de este modo). **Un solo carril por gesto**: el excedente del arrastre
-    se descarta y hay un enfriamiento de 110 ms, así un latigazo rápido nunca
-    salta dos carriles. El candado de eje ignora los gestos verticales.
-  - **Zonas** — toca la mitad izquierda o derecha: respuesta inmediata.
-  - **Giroscopio** — inclina el celular. Umbral de 12° con histéresis (se
-    desarma al volver a 4°) para que inclinar y sostener no dispare ráfagas,
-    centro auto-calibrado, y corrige los ejes si giras la pantalla.
-    **Permiso**: al elegir Giroscopio en Opciones, el juego verifica el estado
-    y te lleva al botón «Activar giroscopio» — el permiso se pide *desde ese
-    clic*, porque Safari solo muestra el diálogo dentro de un gesto (pedirlo
-    al montar era lo que causaba denegaciones fantasma). Si ya lo denegaste,
-    el panel te dice dónde reactivarlo (Safari: «aA» → Ajustes del sitio web →
-    Acceso a movimiento · Chrome: candado → Permisos → Sensores). Se escuchan
-    `deviceorientation` **y** `deviceorientationabsolute`, porque algunos
-    Chrome de Android solo emiten el segundo.
-
-> **Nota**: el modo «Botones» se eliminó; era idéntico a Zonas. Si lo tenías
-> guardado, se migra solo a Zonas.
+- **Controles táctiles**, elegidos a tu gusto:
+  - **Deslizar** — **solo deslizamiento**: 1 gesto = 1 carril. Ni saltos dobles
+    ni respuesta al toque (eso es de Zonas).
+  - **Zonas** — toca la mitad izquierda o derecha.
+  - **Giroscopio** — inclina el celular: 1 inclinación = 1 carril, con
+    calibración de tu postura y zona muerta anti-temblor. **Antes de activarse
+    se comprueba el sensor de verdad** (`src/game/tilt.ts`): si Safari no tiene
+    permiso aparece el botón «Activar giroscopio» con instrucciones para
+    arreglarlo (Ajustes → Safari → Movimiento y acceso al sensor), y si el
+    dispositivo no tiene sensor te ofrece cambiar de control con un toque.
+    Requiere HTTPS (GitHub Pages lo es).
 - **Vibrar**: activa/desactiva la vibración háptica.
 
 Todo se guarda automáticamente en el dispositivo.
 
-### Vidas y power-ups
+### Vidas y power-ups (modo 3 Carriles)
 
 - **Band-Aid (🩹)**: son tus vidas. Empiezas con **3** (máx **9**). Tocar una
-  trampa quita una; con 0 vidas se acaba la partida. Son **muy raras** de ver.
+  trampa quita una; con 0 vidas se acaba la partida. Las curitas tienen un
+  **50 % de probabilidad por oportunidad de power-up**, con al menos **18 s
+  de juego entre apariciones**. No aparecen durante los primeros 18 s ni
+  cuando ya tienes 9 vidas. Las oportunidades siguen separadas por 3800-7000 px.
 - **Fresa (🍓)**: muy rara y **no acumulable**; activa un **×20** a la distancia
   por queso durante **10 segundos** (indicador 🍓 ×20s en pantalla).
   Volver a cogerla reinicia los 10 s, nunca los suma.
+
+### Modo Fila de Ratones — Snake (`行列`)
+
+Accesible directo desde el menú principal (botón **FILA DE RATONES**):
+- **Escenario cuadrado** (`11×11`) con estética de tatami y marco de madera.
+- Cada **queso** que comes suma **1 ratoncito bebé** a tu fila que te sigue en
+  las **4 direcciones** (`↑ ↓ ← →`, con Deslizar, cruceta de Zonas, Giroscopio
+  o teclado).
+- **Las paredes son portales**: si sales por la derecha apareces por la
+  izquierda a la misma altura (igual arriba ↔ abajo). Nunca hacen daño, y la
+  fila cruza con una transición continua (el borde bermellón discontinuo lo
+  indica). Las trampas y el queso se generan contando esos atajos.
+- Chocar contra **tu propia fila** o una **trampa** te hace perder la
+  **mitad de los ratoncitos**. Si te quedas con 0 en la cola y sin escudos y
+  recibes un golpe, termina la partida.
+- **Curitas (🩹)**: otorgan **escudos** contra pérdidas (hasta un máximo de
+  **3**). Si chocas teniendo un escudo, consumes uno y conservas toda tu fila.
+- Tu mejor fila (`snakeBest`) se guarda por separado en IndexedDB.
 
 Tu **mejor distancia se guarda automáticamente** en el dispositivo con
 **IndexedDB** (con espejo en localStorage), junto con partidas jugadas, quesos
@@ -164,15 +176,19 @@ Si algún día quieres rutas absolutas, cambia `base` a `"/Raton/"`.
 └── src/
     ├── App.tsx             ← orquesta menú / juego / game over
     ├── game/
-    │   ├── engine.ts       ← motor: carriles, patrones, aura, combo, partículas
-    │   ├── draw.ts         ← arte procedural: ratón, trampa, queso, torii, nubes
-    │   ├── audio.ts        ← sonido procedural (Web Audio) con volumen maestro
-    │   ├── db.ts           ← IndexedDB (mejor distancia, estadísticas)
+    │   ├── engine.ts       ← motor 3 carriles: patrones, aura, combo, partículas
+    │   ├── snakeEngine.ts  ← motor Fila de Ratones: tablero 11×11 con portales
+    │   ├── sprites.ts      ← caché de sprites y utilidades de rendimiento
+    │   ├── draw.ts         ← arte procedural: ratón (4 direcciones), trampa, queso
+    │   ├── audio.ts        ← sonido procedural y música (canales separados)
+    │   ├── tilt.ts         ← comprobación real del giroscopio y sus permisos
+    │   ├── db.ts           ← IndexedDB (récords de ambos modos, estadísticas)
     │   └── settings.ts     ← ajustes persistidos (volumen, silencio, controles)
     └── components/
-        ├── Menu.tsx        ← portada con récord, ratón animado y ⚙ opciones
-        ├── GameScreen.tsx  ← canvas, HUD, 3 modos de control, pausa + opciones
-        ├── GameOver.tsx    ← panel final + sello hanko de récord
+        ├── Menu.tsx        ← portada: JUGAR y FILA DE RATONES, ratón de frente
+        ├── GameScreen.tsx  ← pantalla del modo 3 carriles
+        ├── SnakeScreen.tsx ← tablero cuadrado, cruceta, pausa + opciones
+        ├── GameOver.tsx    ← panel final + sello hanko (ambos modos)
         ├── SettingsPanel.tsx ← panel de opciones (menú y pausa)
         └── CheeseIcon.tsx  ← icono de queso
 ```
@@ -185,9 +201,17 @@ Todas las constantes de diseño están al principio de
 | Constante | Significado | Valor |
 | --- | --- | --- |
 | `START_SPEED` | Velocidad inicial (px/s) | `260` |
-| `MAX_SPEED` | Velocidad máxima | `680` |
+| `MAX_SPEED` | Velocidad máxima (px/s) | `880` |
 | `RAMP_T` | Segundos hasta la velocidad máxima (rampa gradual) | `110` |
 | `PX_PER_M` | Cuántos píxeles equivalen a 1 metro | `52` |
+| `BANDAID_CHANCE` | Probabilidad de curita por oportunidad de power-up | `0.5` |
+| `BANDAID_COOLDOWN` | Segundos mínimos entre apariciones de curitas | `18` |
+
+La velocidad empieza igual que antes y sube con una curva cuadrática durante
+110 s hasta 880 px/s (antes 680). En las etapas avanzadas aumentan los patrones
+con trampas, especialmente dobles y escalonadas. Cada patrón conserva su queso
+de recompensa; las 3 vidas iniciales, el máximo de 9 y los 1.6 s de protección
+tras un golpe no cambian. Reducir curitas no aumenta la probabilidad de fresas.
 
 Cada nivel de trampas se valida con `fixTrapLevel()`: **siempre existe un
 camino alcanzable** (máx. 1 carril por hueco) entre patrones consecutivos.
@@ -203,12 +227,45 @@ camino alcanzable** (máx. 1 carril por hueco) entre patrones consecutivos.
 | `MAX_FLOATS` | `8` | los `+100` / `+AURA` viejos se retiran antes de terminar |
 | `MAX_DECOR` | `12` | matas, piedras y torii de los márgenes se reciclan |
 
-El hueco entre filas se mide en **tiempo de reacción** (0.75 s → 1.25 s), así que
-en píxeles crece con la velocidad: más rápido = más distancia vertical, jamás
-elementos solapados ni agrupaciones injugables.
+El hueco base entre patrones equivale a **0.50-0.78 s de avance**, con un mínimo
+de 160 px antes de aplicar el factor de cada patrón. Ya no se corta a 620 px:
+continúa creciendo con la velocidad. Las trampas escalonadas también aumentan
+su separación (al menos 0.6 s de avance más 80 px de margen).
 
 En `spawnRow()` puedes ajustar el peso de cada patrón (trampas dobles, cebos,
 filas de queso, zig-zag…) y en `auraMult()` el poder del aura.
+
+### Rendimiento
+
+- **Nada invisible se dibuja**: el antiguo cielo de la carrera quedaba 100 %
+  tapado por la pista y se pintaba a pantalla completa cada frame; eliminado.
+- **Sprites cacheados** (`sprites.ts`): crías de la fila (4 direcciones × 8
+  fotogramas en bucle perfecto), trampas abiertas y quesos se dibujan una vez y
+  luego solo se copian. El tablero de Fila (fondo, marco y tatami) es una
+  única imagen.
+- **Lienzos opacos** (`alpha: false`) y resolución interna máxima de **2×**.
+- **Calidad adaptativa**: si el móvil no sostiene ~40 fps durante 1,5 s, la
+  resolución baja a 1,5× y luego a 1× (sin pétalos ni líneas de velocidad).
+- **Sin trabajo oculto**: en pausa, tras el final o con Opciones abierto en el
+  menú, el lienzo deja de redibujarse.
+- **Sin desenfoques por frame**: el HUD ya no usa `backdrop-blur` sobre el
+  lienzo animado, ni el papel washi `mix-blend-mode`.
+- **Sin basura por frame**: partículas, textos y entidades se filtran en su
+  sitio (menos pausas del recolector de memoria en móviles modestos).
+
+### Pruebas de balance
+
+```bash
+node --test tests/game-balance.test.mjs tests/snake-mode.test.mjs
+npx tsc --noEmit
+npm run build
+```
+
+Las pruebas usan el motor real con entrada aleatoria reproducible y simulan
+36 partidas a 60, 30 y 20 fps en tres tamaños de pantalla. Comprueban la rampa
+de velocidad, la frecuencia de curitas, las colisiones, las rutas entre filas,
+las separaciones y los límites de efectos. No sustituyen una prueba en móvil
+físico de controles, rendimiento gráfico o sonido.
 
 ## Privacidad
 

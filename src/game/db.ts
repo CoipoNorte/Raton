@@ -9,9 +9,20 @@ export interface SaveData {
   runs: number;
   cheeseTotal: number;
   auraBest: number;
+  snakeBest: number;
+  snakeRuns: number;
+  snakeCheeseTotal: number;
 }
 
-const DEFAULTS: SaveData = { best: 0, runs: 0, cheeseTotal: 0, auraBest: 0 };
+export const EMPTY_SAVE: SaveData = {
+  best: 0,
+  runs: 0,
+  cheeseTotal: 0,
+  auraBest: 0,
+  snakeBest: 0,
+  snakeRuns: 0,
+  snakeCheeseTotal: 0,
+};
 const DB_NAME = "raton-db";
 const STORE = "kv";
 
@@ -55,15 +66,15 @@ async function idbSet(key: string, value: unknown): Promise<void> {
 export async function loadSave(): Promise<SaveData> {
   try {
     const data = await idbGet<SaveData>("save");
-    return { ...DEFAULTS, ...(data ?? {}) };
+    return { ...EMPTY_SAVE, ...(data ?? {}) };
   } catch {
     try {
       const raw = localStorage.getItem("raton-save");
-      if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+      if (raw) return { ...EMPTY_SAVE, ...JSON.parse(raw) };
     } catch {
       /* noop */
     }
-    return { ...DEFAULTS };
+    return { ...EMPTY_SAVE };
   }
 }
 
@@ -88,10 +99,27 @@ export function applyRun(
 ): { next: SaveData; isRecord: boolean } {
   const isRecord = run.distance > save.best;
   const next: SaveData = {
+    ...save,
     best: isRecord ? Math.floor(run.distance) : save.best,
     runs: save.runs + 1,
     cheeseTotal: save.cheeseTotal + run.cheese,
     auraBest: Math.max(save.auraBest, run.auraMax),
+  };
+  void persistSave(next);
+  return { next, isRecord };
+}
+
+/** Aplica el resultado de una partida del modo Fila (Snake) */
+export function applySnakeRun(
+  save: SaveData,
+  run: { maxChain: number; cheese: number }
+): { next: SaveData; isRecord: boolean } {
+  const isRecord = run.maxChain > save.snakeBest;
+  const next: SaveData = {
+    ...save,
+    snakeBest: isRecord ? run.maxChain : save.snakeBest,
+    snakeRuns: save.snakeRuns + 1,
+    snakeCheeseTotal: save.snakeCheeseTotal + run.cheese,
   };
   void persistSave(next);
   return { next, isRecord };

@@ -413,6 +413,24 @@ export class SoundEngine {
       this.env(PENTA[n], 0.32, "triangle", 0.3, undefined, i * 0.08)
     );
   }
+
+  /** Escudo de curita recogido — tono cálido ascendente */
+  shieldGet() {
+    this.env(587.33, 0.16, "sine", 0.28);
+    this.env(880.0, 0.24, "triangle", 0.26, undefined, 0.07);
+  }
+
+  /** Escudo absorbe un choque — rebote cristalino */
+  shieldSave() {
+    this.noise(0.06, 0.22, 1800);
+    this.env(932.33, 0.18, "triangle", 0.3, 587.33);
+  }
+
+  /** Choque que parte la fila a la mitad — golpe seco + descenso suave */
+  split() {
+    this.noise(0.08, 0.32, 1400);
+    this.env(311.13, 0.26, "triangle", 0.28, 146.83);
+  }
 }
 
 /** Vibración segura (no-op si no existe o está desactivada) */
